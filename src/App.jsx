@@ -177,24 +177,71 @@ const App = () => {
     });
   };
 
-  const fetchStockData = async (symbol = "6669", retryCount = 0) => {
+  const fetchStockData = async (symbol = "6669", retryCount = 0, proxyIndex = 0) => {
     setLoading(true);
     setFetchError(null);
     
     const maxRetries = 3;
     const ticker = symbol.toUpperCase().includes('.') ? symbol.toUpperCase() : `${symbol.toUpperCase()}.TW`;
     const endTime = Math.floor(Date.now() / 1000);
-    const startTime = 0; 
-    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${startTime}&period2=${endTime}&interval=1d`)}`;
+    const startTime = 0;
+    
+    // 多個備用代理服務，提高穩定性
+    const proxyServices = [
+      // 主要代理：allorigins.win
+      (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+      // 備用代理 1：corsproxy.io
+      (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+      // 備用代理 2：cors-anywhere (需要自行部署或使用公開實例)
+      (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+      // 備用代理 3：直接嘗試 Yahoo Finance (可能因 CORS 失敗，但某些環境可用)
+      (url) => url
+    ];
+    
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${startTime}&period2=${endTime}&interval=1d`;
+    const currentProxyIndex = proxyIndex % proxyServices.length;
+    const proxyUrl = proxyServices[currentProxyIndex](yahooUrl);
     
     try {
-      const response = await fetch(proxyUrl);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      // 創建超時控制器（兼容性更好的方式）
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超時
       
-      const json = await response.json();
-      const result = JSON.parse(json.contents).chart.result?.[0];
+      const response = await fetch(proxyUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+        },
+        signal: controller.signal
+      });
       
-      if (!result) throw new Error("股票代號不存在或無法取得數據");
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      let json;
+      // 處理不同的代理響應格式
+      if (currentProxyIndex === 0 || currentProxyIndex === 2) {
+        // allorigins.win 格式：{ contents: "..." }
+        json = await response.json();
+        if (json.contents) {
+          json = JSON.parse(json.contents);
+        }
+      } else if (currentProxyIndex === 1) {
+        // corsproxy.io 直接返回 JSON
+        json = await response.json();
+      } else {
+        // 直接請求 Yahoo Finance
+        json = await response.json();
+      }
+      
+      const result = json.chart?.result?.[0];
+      
+      if (!result) {
+        throw new Error("股票代號不存在或無法取得數據");
+      }
 
       let lastM = -1;
       const formatted = result.timestamp.map((ts, i) => {
@@ -213,24 +260,33 @@ const App = () => {
         };
       }).filter(d => d.price !== null);
       
-      if (formatted.length === 0) throw new Error("無法取得有效的股價數據");
+      if (formatted.length === 0) {
+        throw new Error("無法取得有效的股價數據");
+      }
       
       const processed = processMarketData(formatted);
       setData(processed);
       if (processed.length > 0) setManualPrice(Math.round(processed[processed.length - 1].price));
       setLoading(false);
     } catch (err) {
-      console.error(`Fetch Error (嘗試 ${retryCount + 1}/${maxRetries}):`, err);
+      console.error(`Fetch Error (代理 ${currentProxyIndex + 1}/${proxyServices.length}, 嘗試 ${retryCount + 1}/${maxRetries}):`, err);
       
-      // 如果還有重試次數，等待後重試
+      // 如果還有其他代理可以嘗試，先切換代理
+      if (currentProxyIndex < proxyServices.length - 1) {
+        console.log(`切換到備用代理 ${currentProxyIndex + 2}...`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return fetchStockData(symbol, retryCount, currentProxyIndex + 1);
+      }
+      
+      // 如果所有代理都試過了，且還有重試次數，等待後重試所有代理
       if (retryCount < maxRetries - 1) {
         await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // 遞增延遲：1秒、2秒、3秒
-        return fetchStockData(symbol, retryCount + 1);
+        return fetchStockData(symbol, retryCount + 1, 0); // 從第一個代理重新開始
       } else {
         // 所有重試都失敗，顯示錯誤視窗
         setFetchError({
           title: "無法取得股價數據",
-          message: `已重試 ${maxRetries} 次仍無法取得數據。\n\n錯誤訊息：${err.message || "網路連線失敗"}\n\n請檢查：\n1. 網路連線是否正常\n2. 股票代號是否正確 (${symbol})\n3. 稍後再試`,
+          message: `已嘗試 ${proxyServices.length} 個代理服務並重試 ${maxRetries} 次仍無法取得數據。\n\n錯誤訊息：${err.message || "網路連線失敗"}\n\n可能原因：\n1. 所有代理服務暫時無法使用\n2. 網路連線問題\n3. 股票代號不正確 (${symbol})\n4. Yahoo Finance API 暫時無法訪問\n\n建議：\n• 檢查網路連線\n• 稍後再試\n• 確認股票代號正確`,
           symbol: symbol
         });
         setLoading(false);
