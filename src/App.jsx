@@ -9,7 +9,14 @@ const App = () => {
   const [manualPrice, setManualPrice] = useState("");
   const [isChartExpanded, setIsChartExpanded] = useState(false);
   const [activeInfo, setActiveInfo] = useState(null);
-  const [fetchError, setFetchError] = useState(null); 
+  const [fetchError, setFetchError] = useState(null);
+  const [loadingProgress, setLoadingProgress] = useState({
+    currentProxy: 0,
+    totalProxies: 0,
+    retryCount: 0,
+    maxRetries: 0,
+    proxyName: ''
+  }); 
   
   const [visibleLayers, setVisibleLayers] = useState({
     ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false
@@ -189,18 +196,28 @@ const App = () => {
     // 多個備用代理服務，提高穩定性
     const proxyServices = [
       // 主要代理：allorigins.win
-      (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+      { name: 'AllOrigins (主要)', func: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` },
       // 備用代理 1：corsproxy.io
-      (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-      // 備用代理 2：cors-anywhere (需要自行部署或使用公開實例)
-      (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+      { name: 'CorsProxy', func: (url) => `https://corsproxy.io/?${encodeURIComponent(url)}` },
+      // 備用代理 2：allorigins raw
+      { name: 'AllOrigins (Raw)', func: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
       // 備用代理 3：直接嘗試 Yahoo Finance (可能因 CORS 失敗，但某些環境可用)
-      (url) => url
+      { name: 'Yahoo Finance (直接)', func: (url) => url }
     ];
     
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${startTime}&period2=${endTime}&interval=1d`;
     const currentProxyIndex = proxyIndex % proxyServices.length;
-    const proxyUrl = proxyServices[currentProxyIndex](yahooUrl);
+    const currentProxy = proxyServices[currentProxyIndex];
+    const proxyUrl = currentProxy.func(yahooUrl);
+    
+    // 更新進度狀態
+    setLoadingProgress({
+      currentProxy: currentProxyIndex + 1,
+      totalProxies: proxyServices.length,
+      retryCount: retryCount + 1,
+      maxRetries: maxRetries,
+      proxyName: currentProxy.name
+    });
     
     try {
       // 創建超時控制器（兼容性更好的方式）
@@ -237,6 +254,12 @@ const App = () => {
         json = await response.json();
       }
       
+      // 更新進度：成功獲取數據
+      setLoadingProgress(prev => ({
+        ...prev,
+        status: 'processing'
+      }));
+      
       const result = json.chart?.result?.[0];
       
       if (!result) {
@@ -268,8 +291,22 @@ const App = () => {
       setData(processed);
       if (processed.length > 0) setManualPrice(Math.round(processed[processed.length - 1].price));
       setLoading(false);
+      // 清除進度狀態
+      setLoadingProgress({
+        currentProxy: 0,
+        totalProxies: 0,
+        retryCount: 0,
+        maxRetries: 0,
+        proxyName: ''
+      });
     } catch (err) {
       console.error(`Fetch Error (代理 ${currentProxyIndex + 1}/${proxyServices.length}, 嘗試 ${retryCount + 1}/${maxRetries}):`, err);
+      
+      // 更新進度：顯示錯誤
+      setLoadingProgress(prev => ({
+        ...prev,
+        error: err.message || '連線失敗'
+      }));
       
       // 如果還有其他代理可以嘗試，先切換代理
       if (currentProxyIndex < proxyServices.length - 1) {
@@ -290,6 +327,14 @@ const App = () => {
           symbol: symbol
         });
         setLoading(false);
+        // 清除進度狀態
+        setLoadingProgress({
+          currentProxy: 0,
+          totalProxies: 0,
+          retryCount: 0,
+          maxRetries: 0,
+          proxyName: ''
+        });
       }
     }
   };
@@ -767,18 +812,59 @@ const App = () => {
       {/* Loading Modal - 放在最外層，不受模糊影響 */}
       {loading && (
         <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-4 backdrop-blur-md">
-          <div className="bg-neutral-800 border-2 border-indigo-500/50 p-8 rounded-2xl max-w-sm w-full shadow-2xl relative">
+          <div className="bg-neutral-800 border-2 border-indigo-500/50 p-6 sm:p-8 rounded-2xl max-w-sm w-full shadow-2xl relative">
             <div className="flex flex-col items-center gap-4">
               <div className="p-4 bg-indigo-500/20 rounded-full">
                 <RefreshCw size={32} className="text-indigo-400 animate-spin"/>
               </div>
               <h3 className="text-xl font-black text-indigo-400">正在獲取資料</h3>
-              <p className="text-sm text-neutral-400 text-center">
-                正在從網路獲取股價數據，請稍候...
-              </p>
+              
+              {/* 進度信息 */}
+              {loadingProgress.totalProxies > 0 && (
+                <div className="w-full space-y-3">
+                  <div className="bg-neutral-900/50 rounded-xl p-4 space-y-2">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-neutral-400">代理服務</span>
+                      <span className="text-indigo-400 font-bold">
+                        {loadingProgress.proxyName || '連接中...'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs text-neutral-500">
+                      <span>代理 {loadingProgress.currentProxy} / {loadingProgress.totalProxies}</span>
+                      {loadingProgress.error && (
+                        <span className="text-rose-400 text-[10px] truncate max-w-[120px]" title={loadingProgress.error}>
+                          ⚠ {loadingProgress.error.length > 15 ? loadingProgress.error.substring(0, 15) + '...' : loadingProgress.error}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div className="bg-neutral-900/50 rounded-xl p-4 space-y-2">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-neutral-400">重試次數</span>
+                      <span className="text-amber-400 font-bold">
+                        {loadingProgress.retryCount} / {loadingProgress.maxRetries}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* 進度條 */}
               <div className="w-full bg-neutral-700 rounded-full h-2 mt-2 overflow-hidden">
-                <div className="bg-indigo-500 h-full rounded-full animate-pulse" style={{width: '60%'}}></div>
+                <div 
+                  className="bg-indigo-500 h-full rounded-full transition-all duration-300" 
+                  style={{
+                    width: loadingProgress.totalProxies > 0 
+                      ? `${Math.min(100, ((loadingProgress.currentProxy - 1) / loadingProgress.totalProxies) * 50 + (loadingProgress.retryCount / loadingProgress.maxRetries) * 50)}%`
+                      : '60%'
+                  }}
+                ></div>
               </div>
+              
+              <p className="text-xs text-neutral-500 text-center mt-2">
+                {loadingProgress.status === 'processing' ? '正在處理數據...' : '正在連接伺服器...'}
+              </p>
             </div>
           </div>
         </div>
