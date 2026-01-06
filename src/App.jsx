@@ -1,31 +1,70 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { Activity, BarChart3, RefreshCw, Info, ChevronLeft, ChevronRight, Maximize2, Minimize2, ShieldCheck, HelpCircle, X, Search, TrendingUp, AlertTriangle } from 'lucide-react';
+import { Activity, BarChart3, RefreshCw, Info, ChevronLeft, ChevronRight, Maximize2, Minimize2, ShieldCheck, HelpCircle, X, Search, TrendingUp, AlertTriangle, Plus } from 'lucide-react';
 
 const App = () => {
-  const [stockSymbol, setStockSymbol] = useState("6669"); 
-  const [data, setData] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [manualPrice, setManualPrice] = useState("");
+  // Tab 管理系統 - 預設兩個 tab
+  const [tabs, setTabs] = useState([
+    { id: '6669', symbol: '6669', data: [], loading: false, manualPrice: '', fetchError: null, visibleLayers: { ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false } },
+    { id: '3231', symbol: '3231', data: [], loading: false, manualPrice: '', fetchError: null, visibleLayers: { ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false } }
+  ]);
+  const [activeTabId, setActiveTabId] = useState('6669');
   const [isChartExpanded, setIsChartExpanded] = useState(false);
   const [activeInfo, setActiveInfo] = useState(null);
-  const [fetchError, setFetchError] = useState(null);
   const [loadingProgress, setLoadingProgress] = useState({
     currentProxy: 0,
     totalProxies: 0,
     retryCount: 0,
     maxRetries: 0,
     proxyName: ''
-  }); 
-  
-  const [visibleLayers, setVisibleLayers] = useState({
-    ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false
   });
+  
+  // 當前活動 tab 的數據（方便使用）
+  const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId) || tabs[0], [tabs, activeTabId]);
+  const stockSymbol = activeTab?.symbol || '6669';
+  const data = activeTab?.data || [];
+  const loading = activeTab?.loading || false;
+  const manualPrice = activeTab?.manualPrice || '';
+  const fetchError = activeTab?.fetchError || null;
+  const visibleLayers = activeTab?.visibleLayers || { ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false };
 
   const chartRef = useRef(null);
   const isDragging = useRef(false);
   const startX = useRef(0);
   const scrollLeft = useRef(0);
+  // 為每個 tab 儲存 AbortController，避免切換 tab 時中止正在進行的請求
+  const abortControllersRef = useRef({});
+  // 使用 ref 追蹤當前的 activeTabId，避免閉包問題
+  const activeTabIdRef = useRef(activeTabId);
+  
+  // 當 activeTabId 改變時，更新 ref
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
+
+  // 更新 tab 的輔助函數
+  const updateTab = (tabId, updates) => {
+    setTabs(prev => prev.map(tab => 
+      tab.id === tabId ? { ...tab, ...updates } : tab
+    ));
+  };
+
+
+  // 切換 tab
+  const switchTab = (tabId) => {
+    setActiveTabId(tabId);
+    const tab = tabs.find(t => t.id === tabId);
+    // 如果該 tab 沒有數據且沒有正在載入，則載入數據
+    if (tab && tab.data.length === 0 && !tab.loading && !tab.fetchError) {
+      console.log(`[切換 Tab] 載入 ${tab.symbol} (${tabId}) 的數據`);
+      fetchStockData(tab.symbol, tabId);
+    } else if (tab && tab.fetchError) {
+      // 如果有錯誤，清除錯誤並重新載入
+      console.log(`[切換 Tab] ${tab.symbol} (${tabId}) 之前有錯誤，清除錯誤並重新載入`);
+      updateTab(tabId, { fetchError: null });
+      fetchStockData(tab.symbol, tabId);
+    }
+  };
 
   // 定義各指標滿分權重
   const MAX_SCORES = {
@@ -184,14 +223,17 @@ const App = () => {
     });
   };
 
-  const fetchStockData = async (symbol = "6669", retryCount = 0, proxyIndex = 0) => {
-    setLoading(true);
-    setFetchError(null);
+  const fetchStockData = async (symbol = "6669", tabId = null, retryCount = 0, proxyIndex = 0) => {
+    const targetTabId = tabId || activeTabId;
+    updateTab(targetTabId, { loading: true, fetchError: null });
     
     const maxRetries = 3;
+    // 處理股票代號：如果沒有包含點號，則加上 .TW 後綴（台灣股票）
     const ticker = symbol.toUpperCase().includes('.') ? symbol.toUpperCase() : `${symbol.toUpperCase()}.TW`;
     const endTime = Math.floor(Date.now() / 1000);
     const startTime = 0;
+    
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${startTime}&period2=${endTime}&interval=1d`;
     
     // 多個備用代理服務，提高穩定性
     const proxyServices = [
@@ -201,14 +243,19 @@ const App = () => {
       { name: 'CorsProxy', func: (url) => `https://corsproxy.io/?${encodeURIComponent(url)}` },
       // 備用代理 2：allorigins raw
       { name: 'AllOrigins (Raw)', func: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
-      // 備用代理 3：直接嘗試 Yahoo Finance (可能因 CORS 失敗，但某些環境可用)
+      // 備用代理 3：cors.sh
+      { name: 'CORS.sh', func: (url) => `https://cors.sh/${url}` },
+      // 備用代理 4：直接嘗試 Yahoo Finance (可能因 CORS 失敗，但某些環境可用)
       { name: 'Yahoo Finance (直接)', func: (url) => url }
     ];
     
-    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${startTime}&period2=${endTime}&interval=1d`;
+    // 調試信息：輸出構建的 URL
+    console.log(`[${symbol}] 構建的 Yahoo Finance URL:`, yahooUrl);
+    console.log(`[${symbol}] Ticker:`, ticker);
     const currentProxyIndex = proxyIndex % proxyServices.length;
     const currentProxy = proxyServices[currentProxyIndex];
     const proxyUrl = currentProxy.func(yahooUrl);
+    console.log(`[${symbol}] 使用的代理: ${currentProxy.name}, 代理 URL:`, proxyUrl);
     
     // 更新進度狀態
     setLoadingProgress({
@@ -220,9 +267,20 @@ const App = () => {
     });
     
     try {
-      // 創建超時控制器（兼容性更好的方式）
+      // 為每個 tab 創建獨立的 AbortController，避免切換 tab 時中止正在進行的請求
+      // 如果該 tab 已經有正在進行的請求，先中止它
+      if (abortControllersRef.current[targetTabId]) {
+        abortControllersRef.current[targetTabId].abort();
+      }
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超時
+      abortControllersRef.current[targetTabId] = controller;
+      
+      // 增加超時時間到 20 秒，給代理服務更多時間
+      const timeoutId = setTimeout(() => {
+        if (!controller.signal.aborted) {
+          controller.abort();
+        }
+      }, 20000); // 20秒超時
       
       const response = await fetch(proxyUrl, {
         method: 'GET',
@@ -246,11 +304,11 @@ const App = () => {
         if (json.contents) {
           json = JSON.parse(json.contents);
         }
-      } else if (currentProxyIndex === 1) {
-        // corsproxy.io 直接返回 JSON
+      } else if (currentProxyIndex === 1 || currentProxyIndex === 3) {
+        // corsproxy.io 和 cors.sh 直接返回 JSON
         json = await response.json();
       } else {
-        // 直接請求 Yahoo Finance
+        // 直接請求 Yahoo Finance (index 4)
         json = await response.json();
       }
       
@@ -288,9 +346,22 @@ const App = () => {
       }
       
       const processed = processMarketData(formatted);
-      setData(processed);
-      if (processed.length > 0) setManualPrice(Math.round(processed[processed.length - 1].price));
-      setLoading(false);
+      
+      // 再次檢查用戶是否還在該 tab（使用 ref 獲取最新的 activeTabId，避免閉包問題）
+      const finalActiveTabId = activeTabIdRef.current;
+      if (finalActiveTabId === targetTabId) {
+        updateTab(targetTabId, {
+          data: processed,
+          manualPrice: processed.length > 0 ? Math.round(processed[processed.length - 1].price).toString() : '',
+          loading: false
+        });
+      } else {
+        console.log(`[${symbol}] 數據載入完成，但用戶已切換到其他 tab (${finalActiveTabId})，不更新數據`);
+      }
+      
+      // 清除 AbortController 引用
+      delete abortControllersRef.current[targetTabId];
+      
       // 清除進度狀態
       setLoadingProgress({
         currentProxy: 0,
@@ -300,7 +371,35 @@ const App = () => {
         proxyName: ''
       });
     } catch (err) {
-      console.error(`Fetch Error (代理 ${currentProxyIndex + 1}/${proxyServices.length}, 嘗試 ${retryCount + 1}/${maxRetries}):`, err);
+      // 檢查是否是因為 AbortController 超時或被中止
+      const isAbortError = err.name === 'AbortError' || err.message?.includes('aborted');
+      const isNetworkError = err.name === 'TypeError' && err.message?.includes('Failed to fetch');
+      
+      // 檢查用戶是否已經切換到其他 tab（使用 ref 獲取最新的 activeTabId，避免閉包問題）
+      const currentActiveTabId = activeTabIdRef.current;
+      const userSwitchedTab = currentActiveTabId !== targetTabId;
+      
+      // 如果是因為切換 tab 導致的中止，不顯示錯誤也不重試
+      if (isAbortError && userSwitchedTab) {
+        console.log(`[${symbol}] 請求被中止（用戶切換到其他 tab: ${currentActiveTabId}，目標 tab: ${targetTabId}）`);
+        // 清除該 tab 的 loading 狀態
+        updateTab(targetTabId, { loading: false });
+        // 清除 AbortController 引用
+        delete abortControllersRef.current[targetTabId];
+        return;
+      }
+      
+      // 如果是中止錯誤但用戶沒有切換 tab，可能是超時，應該重試
+      if (isAbortError && !userSwitchedTab) {
+        console.warn(`[${symbol}] 請求超時或被中止（但用戶仍在該 tab: ${currentActiveTabId}），將重試`);
+      }
+      
+      console.error(`[${symbol}] Fetch Error (代理 ${currentProxyIndex + 1}/${proxyServices.length}, 嘗試 ${retryCount + 1}/${maxRetries}):`, err);
+      console.error(`[${symbol}] 錯誤類型:`, err.name);
+      console.error(`[${symbol}] 錯誤訊息:`, err.message);
+      console.error(`[${symbol}] 請求的 URL:`, proxyUrl);
+      console.error(`[${symbol}] Ticker:`, ticker);
+      console.error(`[${symbol}] 當前 activeTabId: ${currentActiveTabId}, targetTabId: ${targetTabId}`);
       
       // 更新進度：顯示錯誤
       setLoadingProgress(prev => ({
@@ -310,23 +409,30 @@ const App = () => {
       
       // 如果還有其他代理可以嘗試，先切換代理
       if (currentProxyIndex < proxyServices.length - 1) {
-        console.log(`切換到備用代理 ${currentProxyIndex + 2}...`);
+        console.log(`[${symbol}] 切換到備用代理 ${currentProxyIndex + 2}/${proxyServices.length} (${proxyServices[currentProxyIndex + 1].name})...`);
         await new Promise(resolve => setTimeout(resolve, 500));
-        return fetchStockData(symbol, retryCount, currentProxyIndex + 1);
+        return fetchStockData(symbol, targetTabId, retryCount, currentProxyIndex + 1);
       }
       
       // 如果所有代理都試過了，且還有重試次數，等待後重試所有代理
       if (retryCount < maxRetries - 1) {
+        console.log(`[${symbol}] 所有代理都失敗，等待 ${1000 * (retryCount + 1)}ms 後重試...`);
         await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // 遞增延遲：1秒、2秒、3秒
-        return fetchStockData(symbol, retryCount + 1, 0); // 從第一個代理重新開始
+        return fetchStockData(symbol, targetTabId, retryCount + 1, 0); // 從第一個代理重新開始
       } else {
         // 所有重試都失敗，顯示錯誤視窗
-        setFetchError({
-          title: "無法取得股價數據",
-          message: `已嘗試 ${proxyServices.length} 個代理服務並重試 ${maxRetries} 次仍無法取得數據。\n\n錯誤訊息：${err.message || "網路連線失敗"}\n\n可能原因：\n1. 所有代理服務暫時無法使用\n2. 網路連線問題\n3. 股票代號不正確 (${symbol})\n4. Yahoo Finance API 暫時無法訪問\n\n建議：\n• 檢查網路連線\n• 稍後再試\n• 確認股票代號正確`,
-          symbol: symbol
+        const errorDetails = err.name === 'TypeError' && err.message.includes('Failed to fetch') 
+          ? '網路連線失敗或 CORS 錯誤。這通常是因為代理服務暫時無法使用。'
+          : err.message || "網路連線失敗";
+        
+        updateTab(targetTabId, {
+          loading: false,
+          fetchError: {
+            title: "無法取得股價數據",
+            message: `已嘗試 ${proxyServices.length} 個代理服務並重試 ${maxRetries} 次仍無法取得數據。\n\n股票代號：${symbol} (${ticker})\n錯誤訊息：${errorDetails}\n\n可能原因：\n1. 所有代理服務暫時無法使用\n2. 網路連線問題\n3. 股票代號不正確\n4. Yahoo Finance API 暫時無法訪問\n\n建議：\n• 檢查網路連線\n• 稍後再試\n• 確認股票代號正確 (${symbol})`,
+            symbol: symbol
+          }
         });
-        setLoading(false);
         // 清除進度狀態
         setLoadingProgress({
           currentProxy: 0,
@@ -339,7 +445,13 @@ const App = () => {
     }
   };
 
-  useEffect(() => { fetchStockData(stockSymbol); }, []); 
+  useEffect(() => {
+    // 初始化時只載入第一個 tab (6669) 的數據
+    const firstTab = tabs[0];
+    if (firstTab && firstTab.data.length === 0 && !firstTab.loading) {
+      fetchStockData(firstTab.symbol, firstTab.id);
+    }
+  }, []); // 只在組件掛載時執行一次 
 
   useEffect(() => {
     if (data.length > 0 && chartRef.current) {
@@ -349,7 +461,7 @@ const App = () => {
         }
       }, 400);
     }
-  }, [data, isChartExpanded]);
+  }, [data, isChartExpanded, activeTabId]);
 
   // --- 核心：完全依照您的規則重寫評分邏輯 (Algorithm V24 - Exact Specs) ---
   const analysis = useMemo(() => {
@@ -680,7 +792,11 @@ const App = () => {
     chartRef.current.scrollLeft = scrollLeft.current - walk;
   };
 
-  const toggleLayer = (key) => setVisibleLayers(prev => ({ ...prev, [key]: !prev[key] }));
+  const toggleLayer = (key) => {
+    updateTab(activeTabId, {
+      visibleLayers: { ...visibleLayers, [key]: !visibleLayers[key] }
+    });
+  };
   const monthlyTicks = useMemo(() => data.filter(d => d.isNewMonth).map(d => d.fullDate), [data]);
   const chartWidth = useMemo(() => `${(data.length / (isChartExpanded ? 150 : 350)) * 100}%`, [data, isChartExpanded]);
   
@@ -899,9 +1015,9 @@ const App = () => {
 
         {/* Error Modal */}
         {fetchError && (
-          <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setFetchError(null)}>
+          <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => updateTab(activeTabId, { fetchError: null })}>
             <div className="bg-neutral-800 border-2 border-rose-500/50 p-6 rounded-2xl max-w-md w-full shadow-2xl relative" onClick={e => e.stopPropagation()}>
-              <button onClick={() => setFetchError(null)} className="absolute top-4 right-4 text-neutral-400 hover:text-white"><X size={20}/></button>
+              <button onClick={() => updateTab(activeTabId, { fetchError: null })} className="absolute top-4 right-4 text-neutral-400 hover:text-white"><X size={20}/></button>
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 bg-rose-500/20 rounded-lg">
                   <AlertTriangle size={24} className="text-rose-400"/>
@@ -914,15 +1030,15 @@ const App = () => {
               <div className="flex gap-3">
                 <button 
                   onClick={() => {
-                    setFetchError(null);
-                    fetchStockData(fetchError.symbol);
+                    updateTab(activeTabId, { fetchError: null });
+                    fetchStockData(fetchError.symbol, activeTabId);
                   }}
                   className="flex-1 bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-xl text-sm font-black transition-all flex items-center justify-center gap-2"
                 >
                   <RefreshCw size={16}/> 重新載入
                 </button>
                 <button 
-                  onClick={() => setFetchError(null)}
+                  onClick={() => updateTab(activeTabId, { fetchError: null })}
                   className="flex-1 bg-neutral-700 hover:bg-neutral-600 px-4 py-2 rounded-xl text-sm font-black transition-all"
                 >
                   關閉
@@ -935,6 +1051,32 @@ const App = () => {
         {/* 主內容區域 - 只在載入時應用模糊 */}
         <div className={loading ? 'blur-sm' : ''}>
 
+      {/* Tab 導航欄 - 分頁樣式 */}
+      <div className="max-w-7xl mx-auto mb-6 px-2">
+        <div className="flex items-end gap-0 overflow-x-auto no-scrollbar border-b-2 border-neutral-800">
+          {tabs.map((tab, index) => (
+            <button
+              key={tab.id}
+              onClick={() => switchTab(tab.id)}
+              className={`relative px-6 sm:px-8 py-3 sm:py-4 transition-all cursor-pointer shrink-0 font-black text-base sm:text-lg md:text-xl uppercase tracking-wider ${
+                activeTabId === tab.id
+                  ? 'text-indigo-300 bg-neutral-900 border-t-2 border-l-2 border-r-2 border-indigo-500 rounded-t-xl sm:rounded-t-2xl -mb-[2px] z-10'
+                  : 'text-neutral-500 bg-neutral-950/50 border-t-2 border-l-2 border-r-2 border-transparent rounded-t-lg sm:rounded-t-xl hover:text-neutral-300 hover:bg-neutral-900/70'
+              }`}
+              style={{
+                borderTopLeftRadius: index === 0 ? '0.75rem' : '0',
+                borderTopRightRadius: index === tabs.length - 1 ? '0.75rem' : '0',
+              }}
+            >
+              {tab.symbol}
+              {activeTabId === tab.id && (
+                <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-neutral-950"></div>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center mb-6 md:mb-8 gap-4 md:gap-6 px-2">
         <div className="flex flex-col items-center md:items-start w-full md:w-auto">
           <h1 className="text-2xl sm:text-3xl md:text-4xl font-black bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-emerald-400 tracking-tighter uppercase text-center md:text-left">[{stockSymbol}] 買賣點分析</h1>
@@ -946,15 +1088,32 @@ const App = () => {
             <input 
               type="text" 
               value={stockSymbol} 
-              onChange={(e) => setStockSymbol(e.target.value)} 
-              onKeyDown={(e) => e.key === 'Enter' && fetchStockData(stockSymbol)}
+              onChange={(e) => updateTab(activeTabId, { symbol: e.target.value.toUpperCase() })} 
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const newSymbol = e.target.value.trim().toUpperCase();
+                  if (newSymbol && newSymbol !== stockSymbol) {
+                    updateTab(activeTabId, { symbol: newSymbol });
+                    fetchStockData(newSymbol, activeTabId);
+                  }
+                }
+              }}
               className="bg-transparent pl-7 sm:pl-9 pr-2 sm:pr-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none w-16 sm:w-20 md:w-24 text-neutral-200 font-bold placeholder-neutral-600 uppercase" 
               placeholder="代號"
             />
           </div>
           <div className="w-px h-5 sm:h-6 bg-neutral-700 mx-0.5 sm:mx-1"></div>
-          <input type="number" placeholder="模擬價" value={manualPrice} onChange={(e) => setManualPrice(e.target.value)} className="bg-transparent px-2 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none w-16 sm:w-20 md:w-24 text-indigo-400 font-mono" />
-          <button onClick={() => fetchStockData(stockSymbol)} className="bg-indigo-600 px-2 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black hover:bg-indigo-500 transition-all flex items-center gap-1 sm:gap-2 whitespace-nowrap">
+          <input 
+            type="number" 
+            placeholder="模擬價" 
+            value={manualPrice} 
+            onChange={(e) => updateTab(activeTabId, { manualPrice: e.target.value })} 
+            className="bg-transparent px-2 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none w-16 sm:w-20 md:w-24 text-indigo-400 font-mono" 
+          />
+          <button 
+            onClick={() => fetchStockData(stockSymbol, activeTabId)} 
+            className="bg-indigo-600 px-2 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black hover:bg-indigo-500 transition-all flex items-center gap-1 sm:gap-2 whitespace-nowrap"
+          >
             <RefreshCw size={12} className={`sm:w-[14px] sm:h-[14px] ${loading?'animate-spin':''}`}/><span className="hidden sm:inline">同步</span>
           </button>
         </div>
@@ -965,14 +1124,14 @@ const App = () => {
         {/* 左側：分數推薦區 (加權版) */}
         <div className={`grid grid-cols-1 gap-4 ${isChartExpanded ? 'hidden' : ''}`}>
           <div className="bg-neutral-900 rounded-2xl sm:rounded-[3rem] p-4 sm:p-6 border-2 border-neutral-700 shadow-xl flex flex-col sm:flex-row items-center sm:items-stretch h-full relative group">
-            <div className="flex flex-col items-center shrink-0 w-full sm:w-1/3 text-center mb-4 sm:mb-0">
-              <h3 className="text-emerald-500 font-black text-[9px] sm:text-[10px] uppercase tracking-widest">Buy Power</h3>
+            <div className="flex flex-col items-center justify-center shrink-0 w-full sm:w-1/3 text-center mb-4 sm:mb-0">
+              <h3 className="text-emerald-500 font-black text-[9px] sm:text-[10px] uppercase tracking-widest mb-2 sm:mb-3">Buy Power</h3>
               <span className="text-5xl sm:text-6xl md:text-7xl font-black leading-none text-emerald-400">{analysis?.buy.total ?? '--'}</span>
               <div className={`text-sm sm:text-base font-black mt-3 sm:mt-4 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-full ${analysis?.buy?.signal?.color?.includes('emerald') ? 'bg-emerald-500/30 text-emerald-300' : analysis?.buy?.signal?.color?.includes('cyan') ? 'bg-cyan-500/30 text-cyan-300' : analysis?.buy?.signal?.color?.includes('blue') ? 'bg-blue-500/30 text-blue-300' : 'bg-neutral-500/30 text-neutral-300'} shadow-lg`}>
                 {analysis?.buy?.signal?.text ?? '--'}
               </div>
             </div>
-            <div className="flex-1 sm:pl-6 border-t sm:border-t-0 sm:border-l border-white/5 pt-4 sm:pt-0 w-full sm:w-auto">
+            <div className="flex-1 sm:pl-6 border-t sm:border-t-0 sm:border-l border-white/5 pt-4 sm:pt-0 w-full sm:w-auto flex flex-col justify-center">
               <div className="flex justify-between items-center border-b border-white/5 pb-1 mb-3">
                 <div className="text-xs text-emerald-400 font-black uppercase">佈局權重分析</div>
                 <button 
@@ -995,14 +1154,14 @@ const App = () => {
           </div>
 
           <div className="bg-neutral-900 rounded-2xl sm:rounded-[3rem] p-4 sm:p-6 border-2 border-neutral-700 shadow-xl flex flex-col sm:flex-row items-center sm:items-stretch h-full relative">
-            <div className="flex flex-col items-center shrink-0 w-full sm:w-1/3 text-center mb-4 sm:mb-0">
-              <h3 className="text-rose-500 font-black text-[9px] sm:text-[10px] uppercase tracking-widest">Sell Risk</h3>
+            <div className="flex flex-col items-center justify-center shrink-0 w-full sm:w-1/3 text-center mb-4 sm:mb-0">
+              <h3 className="text-rose-500 font-black text-[9px] sm:text-[10px] uppercase tracking-widest mb-2 sm:mb-3">Sell Risk</h3>
               <span className="text-5xl sm:text-6xl md:text-7xl font-black leading-none text-rose-400">{analysis?.sell.total ?? '--'}</span>
               <div className={`text-sm sm:text-base font-black mt-3 sm:mt-4 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-full ${analysis?.sell?.signal?.color?.includes('rose') ? 'bg-rose-500/30 text-rose-300' : analysis?.sell?.signal?.color?.includes('red') ? 'bg-red-600/40 text-red-200 animate-pulse' : analysis?.sell?.signal?.color?.includes('orange') ? 'bg-orange-500/30 text-orange-300' : 'bg-emerald-500/30 text-emerald-300'} shadow-lg`}>
                 {analysis?.sell?.signal?.text ?? '--'}
               </div>
             </div>
-            <div className="flex-1 sm:pl-6 border-t sm:border-t-0 sm:border-l border-white/5 pt-4 sm:pt-0 w-full sm:w-auto">
+            <div className="flex-1 sm:pl-6 border-t sm:border-t-0 sm:border-l border-white/5 pt-4 sm:pt-0 w-full sm:w-auto flex flex-col justify-center">
               <div className="flex justify-between items-center border-b border-white/5 pb-1 mb-3">
                 <div className="text-xs text-rose-400 font-black uppercase">風險權重分析</div>
                 <button 
