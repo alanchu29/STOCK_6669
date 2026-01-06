@@ -474,6 +474,12 @@ const App = () => {
     // 判斷當前 tab 使用的評分規則（根據 stockSymbol）
     const is3231 = stockSymbol === '3231';
     
+    // 線性映射函數（用於 FIBO 和斜率評分）
+    const map = (val, inMin, inMax, outMin, outMax) => {
+      const v = Math.max(Math.min(val, Math.max(inMin, inMax)), Math.min(inMin, inMax));
+      return outMin + (v - inMin) * (outMax - outMin) / (inMax - inMin);
+    };
+    
     // 1. FIBO 計算（根據股票代號使用不同規則）
     let maxPrice = -Infinity, maxIndex = -1;
     let minPrice = Infinity;
@@ -571,11 +577,7 @@ const App = () => {
         }
       } else {
         // === 6669：原版 FIBO 評分（35分） ===
-        // 線性映射函數
-        const map = (val, inMin, inMax, outMin, outMax) => {
-          const v = Math.max(Math.min(val, Math.max(inMin, inMax)), Math.min(inMin, inMax));
-          return outMin + (v - inMin) * (outMax - outMin) / (inMax - inMin);
-        };
+        // 使用外層定義的 map 函數
 
         // 買入 - 線性給分
         let baseScore = 0;
@@ -955,11 +957,7 @@ const App = () => {
     
     if (is3231) {
       // === 3231 緯創：短線波段版布林評分 (30分，線性給分) ===
-      // 線性映射函數
-      const map = (val, inMin, inMax, outMin, outMax) => {
-        const v = Math.max(Math.min(val, Math.max(inMin, inMax)), Math.min(inMin, inMax));
-        return outMin + (v - inMin) * (outMax - outMin) / (inMax - inMin);
-      };
+      // 使用外層定義的 map 函數
       
       // 【買入評分】抓下軌反彈（線性給分）
       if (pb < 0) {
@@ -1023,6 +1021,13 @@ const App = () => {
     const totalBuyScore = Math.round(b_Fibo + b_Hist + b_Trend + b_Osc + b_Vol);
     const totalSellScore = Math.round(s_Fibo + s_Hist + s_Trend + s_Osc + s_Vol);
 
+    // 計算 maSlope 和 bias（用於顯示和霸王條款判斷，需要在 buySignal 判斷之前計算）
+    const maValue = is3231 ? last.ma20 : last.ma60;
+    const prevMaValue = is3231 ? prev.ma20 : prev.ma60;
+    const bias = maValue ? (p - maValue) / maValue * 100 : 0;
+    const maSlope = prevMaValue && prevMaValue !== 0 ? (maValue - prevMaValue) / prevMaValue : 0;
+    const isBroken = is3231 ? (p < maValue) : (data.slice(-3).length === 3 && data.slice(-3).every(d => d.price < d.ma60));
+
     // 訊號判斷
     let buySignal = { text: '觀望', color: 'text-neutral-500' };
     if (is3231) {
@@ -1058,13 +1063,6 @@ const App = () => {
     if (!is3231 && fibo.l618 && p < fibo.l618) {
       sellSignal = { text: '破線 (強制停損)', color: 'text-red-600 font-black animate-pulse' };
     }
-
-    // 計算 maSlope 和 bias（用於顯示和霸王條款判斷）
-    const maValue = is3231 ? last.ma20 : last.ma60;
-    const prevMaValue = is3231 ? prev.ma20 : prev.ma60;
-    const bias = maValue ? (p - maValue) / maValue * 100 : 0;
-    const maSlope = prevMaValue && prevMaValue !== 0 ? (maValue - prevMaValue) / prevMaValue : 0;
-    const isBroken = is3231 ? (p < maValue) : (data.slice(-3).length === 3 && data.slice(-3).every(d => d.price < d.ma60));
     
     return { 
       last, prev, fibo, sPerc, maxPrice, minPrice, bias, maSlope, isBroken, fiboValid: fiboValid,
@@ -1179,9 +1177,15 @@ const App = () => {
       }
     },
     { 
-      key: 'ma', title: 'MA 季線趨勢', val: analysis ? `$${Math.round(analysis.last.ma60).toLocaleString()}` : '--', 
-      desc: '趨勢權重 7%。季線代表中期成本。價格在季線上且乖離適中為最佳。', 
-      info: `權重：7% (趨勢+位階)\n目前乖離率：${analysis?.bias?.toFixed(2)}%\n季線斜率：${analysis?.maSlope > 0 ? '上揚' : '下彎'}\n\n【買入評分】\n● 趨勢: 斜率>0 (+3)\n● 位階: 乖離0-5% (+4), 5-10% (+2), 假跌破 (+1)\n● 破位: 0分\n\n【賣出評分】\n● 轉弱: 斜率<0 (+3)\n● 過熱: 乖離>25% (+4), >15% (+2)\n● 破位: 跌破3天 (+3)`,
+      key: 'ma', 
+      title: is3231 ? 'MA 月線趨勢' : 'MA 季線趨勢', 
+      val: analysis ? `$${Math.round(is3231 ? (analysis.last.ma20 || 0) : analysis.last.ma60).toLocaleString()}` : '--', 
+      desc: is3231
+        ? `動能權重 ${analysis?.maMaxScore || 10}%。月線代表短期成本。負乖離過大即買，正乖離過大即賣。`
+        : '趨勢權重 7%。季線代表中期成本。價格在季線上且乖離適中為最佳。', 
+      info: is3231
+        ? `權重：${analysis?.maMaxScore || 10}% (短線波段版，MA20月線)\n目前乖離率：${analysis?.bias?.toFixed(2)}%\n\n【買入評分 - 只看負乖離】\n● bias < -6%：10分 (急跌超賣區，滿分)\n● -6% <= bias < -3%：6分 (顯著負乖離)\n● -3% <= bias <= 0%：3分 (回測支撐)\n● bias > 0%：0分 (無便宜可撿)\n\n【賣出評分 - 正乖離 + 跌破】\n● bias > +8%：10分 (急漲超買區，滿分)\n● +4% < bias <= +8%：6分 (獲利警戒區)\n● bias <= +4%：0分 (續抱)\n● 跌破月線：至少 3分 (停利/停損)`
+        : `權重：7% (趨勢+位階)\n目前乖離率：${analysis?.bias?.toFixed(2)}%\n季線斜率：${analysis?.maSlope > 0 ? '上揚' : '下彎'}\n\n【買入評分】\n● 趨勢: 斜率>0 (+3)\n● 位階: 乖離0-5% (+4), 5-10% (+2), 假跌破 (+1)\n● 破位: 0分\n\n【賣出評分】\n● 轉弱: 斜率<0 (+3)\n● 過熱: 乖離>25% (+4), >15% (+2)\n● 破位: 跌破3天 (+3)`,
       diag: (p, m) => {
         if (p === undefined) return { t: "分析中...", c: "text-neutral-500" };
         return p > m ? { t: "【多頭排列】股價守穩季線。", c: "text-emerald-400" } : { t: "【空頭盤整】股價位於季線下。", c: "text-rose-400" };
@@ -1795,7 +1799,7 @@ const App = () => {
             card.key === 'macd' ? analysis?.last.macd :
             card.key === 'dmi' ? analysis?.last.adx : 
             card.key === 'kd' ? analysis?.last.k : 0,
-            card.key === 'ma' ? analysis?.last.ma60 : 0
+            card.key === 'ma' ? (is3231 ? (analysis?.last.ma20 || 0) : analysis?.last.ma60) : 0
           ) : { t: "--", c: "" }) : { t: "--", c: "" };
           
           // 取得該指標的得分 (從 analysis.scores 中獲取)
@@ -1856,9 +1860,27 @@ const App = () => {
                     {diagResult.t}
                   </p>
                   <div className="flex gap-2 sm:gap-4 mt-2 text-[10px] sm:text-xs font-mono opacity-80">
-                    {/* 修正：顯示 實得/滿分 格式，並移除 + 號 */}
-                    <span className="text-emerald-400">買: {Math.round(scoreObj.buy)}/{card.key === 'fibo' ? (analysis?.fiboMaxScore || 35) : card.key === 'slope' ? 20 : card.key === 'ma' || card.key === 'macd' ? 7 : card.key === 'dmi' ? 6 : card.key === 'rsi' ? (analysis?.rsiMaxScore || 10) : card.key === 'kd' ? (analysis?.kdMaxScore || 10) : card.key === 'bb' ? (analysis?.bbMaxScore || 5) : 5}</span>
-                    <span className="text-rose-400">賣: {Math.round(scoreObj.sell)}/{card.key === 'fibo' ? (analysis?.fiboMaxScore || 35) : card.key === 'slope' ? 20 : card.key === 'ma' ? (analysis?.maMaxScore || 7) : card.key === 'macd' ? (analysis?.macdMaxScore || 7) : card.key === 'dmi' ? 6 : card.key === 'rsi' ? (analysis?.rsiMaxScore || 10) : card.key === 'kd' ? (analysis?.kdMaxScore || 10) : card.key === 'bb' ? (analysis?.bbMaxScore || 5) : 5}</span>
+                    {/* 修正：顯示 實得/滿分 格式，並根據 is3231 動態調整 maxScore */}
+                    <span className="text-emerald-400">買: {Math.round(scoreObj.buy)}/{
+                      card.key === 'fibo' ? (analysis?.fiboMaxScore || 35) : 
+                      card.key === 'slope' ? (is3231 ? 0 : 20) : 
+                      card.key === 'ma' ? (analysis?.maMaxScore || (is3231 ? 10 : 7)) : 
+                      card.key === 'macd' ? (analysis?.macdMaxScore || (is3231 ? 5 : 7)) : 
+                      card.key === 'dmi' ? (is3231 ? 0 : 6) : 
+                      card.key === 'rsi' ? (analysis?.rsiMaxScore || (is3231 ? 25 : 10)) : 
+                      card.key === 'kd' ? (analysis?.kdMaxScore || (is3231 ? 25 : 10)) : 
+                      card.key === 'bb' ? (analysis?.bbMaxScore || (is3231 ? 30 : 5)) : 5
+                    }</span>
+                    <span className="text-rose-400">賣: {Math.round(scoreObj.sell)}/{
+                      card.key === 'fibo' ? (analysis?.fiboMaxScore || 35) : 
+                      card.key === 'slope' ? (is3231 ? 0 : 20) : 
+                      card.key === 'ma' ? (analysis?.maMaxScore || (is3231 ? 10 : 7)) : 
+                      card.key === 'macd' ? (analysis?.macdMaxScore || (is3231 ? 5 : 7)) : 
+                      card.key === 'dmi' ? (is3231 ? 0 : 6) : 
+                      card.key === 'rsi' ? (analysis?.rsiMaxScore || (is3231 ? 25 : 10)) : 
+                      card.key === 'kd' ? (analysis?.kdMaxScore || (is3231 ? 25 : 10)) : 
+                      card.key === 'bb' ? (analysis?.bbMaxScore || (is3231 ? 30 : 5)) : 5
+                    }</span>
                   </div>
                 </div>
               </div>
