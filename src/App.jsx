@@ -22,6 +22,7 @@ const App = () => {
   // 當前活動 tab 的數據（方便使用）
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId) || tabs[0], [tabs, activeTabId]);
   const stockSymbol = activeTab?.symbol || '6669';
+  const is3231 = stockSymbol === '3231'; // 組件層級的 is3231，用於 JSX 渲染
   const data = activeTab?.data || [];
   const loading = activeTab?.loading || false;
   const manualPrice = activeTab?.manualPrice || '';
