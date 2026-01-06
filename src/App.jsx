@@ -182,7 +182,8 @@ const App = () => {
     const atr14 = calculateATR(highs, lows, closes, 14);
 
     return sortedItems.map((item, i) => {
-      let ma60 = i >= 59 ? closes.slice(i - 59, i + 1).reduce((a, b) => a + b, 0) / 60 : null;
+      let ma20 = i >= 19 ? closes.slice(i - 19, i + 1).reduce((a, b) => a + b, 0) / 20 : null; // 3231 用月線
+      let ma60 = i >= 59 ? closes.slice(i - 59, i + 1).reduce((a, b) => a + b, 0) / 60 : null; // 6669 用季線
       let rsiVal = null;
       if(i >= 14) {
         let up = 0, down = 0;
@@ -214,7 +215,7 @@ const App = () => {
         if(mid !== 0) bandWidth = (upper - lower) / mid;
       }
       return { 
-        ...item, ma60, rsiVal, slopeVal, upper, lower, mid, pctB, bandWidth,
+        ...item, ma20, ma60, rsiVal, slopeVal, upper, lower, mid, pctB, bandWidth,
         macd: osc[i] || 0, adx: adx[i] || 0, pdi: pdi[i] || 0, mdi: mdi[i] || 0,
         k: kdData[i].k, d: kdData[i].d,
         volMA5: volMA5[i] || 0, volMA20: volMA20[i] || 0, atr: atr14[i] || 0,
@@ -469,34 +470,71 @@ const App = () => {
     const last = data[data.length - 1];
     const prev = data[data.length - 2];
     
-    // 1. FIBO: Impulse Leg (120日滾動回溯)
-    const recentData = data.slice(-120); 
+    // 判斷當前 tab 使用的評分規則（根據 stockSymbol）
+    const is3231 = stockSymbol === '3231';
+    
+    // 1. FIBO 計算（根據股票代號使用不同規則）
     let maxPrice = -Infinity, maxIndex = -1;
-    recentData.forEach((d, i) => { if (d.price > maxPrice) { maxPrice = d.price; maxIndex = i; } });
-    
     let minPrice = Infinity;
-    const legData = recentData.slice(0, maxIndex + 1); // 起漲點必須在高點前
-    legData.forEach(d => { if (d.price < minPrice) minPrice = d.price; });
+    let recentData, range, swingRate, fiboValid, fibo;
     
-    // 防呆：若高點就是第一天，則往前再找
-    if (maxIndex < 5 && data.length > 200) {
-       const extendData = data.slice(-200);
-       minPrice = Math.min(...extendData.map(d=>d.price));
+    if (is3231) {
+      // === 3231 緯創：短線波段版（20日箱型） ===
+      recentData = data.slice(-20); // 20 個交易日（月線級別）
+      
+      // 在 20 日內找出最高價和最低價（不要求最低點在最高點之前）
+      recentData.forEach((d, i) => { 
+        if (d.price > maxPrice) { maxPrice = d.price; maxIndex = i; }
+        if (d.price < minPrice) { minPrice = d.price; }
+      });
+      
+      range = maxPrice - minPrice;
+      swingRate = (maxPrice - minPrice) / minPrice;
+      fiboValid = swingRate >= 0.05; // 門檻 5%（避免死魚盤）
+      
+      // 3231 只計算簡化位階
+      fibo = { 
+        l500: maxPrice - range * 0.5,  // 箱型中關
+        l786: maxPrice - range * 0.786, // 接近箱底（回檔 78.6%）
+        ext1272: maxPrice + range * 0.272, // 短線噴出
+        // 為了兼容顯示，其他位階設為 null
+        l236: null,
+        l382: null,
+        l618: null,
+        ext1618: null
+      };
+    } else {
+      // === 6669：原版（120日 Impulse Leg） ===
+      recentData = data.slice(-120); // 120 個交易日
+      
+      // 找最高點
+      recentData.forEach((d, i) => { if (d.price > maxPrice) { maxPrice = d.price; maxIndex = i; } });
+      
+      // 找最低點（必須在最高點之前）
+      const legData = recentData.slice(0, maxIndex + 1);
+      legData.forEach(d => { if (d.price < minPrice) minPrice = d.price; });
+      
+      // 防呆：若高點就是第一天，則往前再找
+      if (maxIndex < 5 && data.length > 200) {
+         const extendData = data.slice(-200);
+         minPrice = Math.min(...extendData.map(d=>d.price));
+      }
+      
+      range = maxPrice - minPrice;
+      swingRate = (maxPrice - minPrice) / minPrice;
+      fiboValid = swingRate >= 0.1; // 門檻 10%
+      
+      // 6669 計算完整位階
+      fibo = { 
+        l236: maxPrice - range * 0.236, 
+        l382: maxPrice - range * 0.382, 
+        l500: maxPrice - range * 0.5,
+        l618: maxPrice - range * 0.618, 
+        l786: maxPrice - range * 0.786,
+        ext1272: maxPrice + range * 0.272, 
+        ext1618: maxPrice + range * 0.618 
+      };
     }
-
-    const range = maxPrice - minPrice;
-    const swingRate = (maxPrice - minPrice) / minPrice;
-    const fiboValid = swingRate >= 0.1; // 門檻 10%
-
-    const fibo = { 
-      l236: maxPrice - range * 0.236, 
-      l382: maxPrice - range * 0.382, 
-      l500: maxPrice - range * 0.5,
-      l618: maxPrice - range * 0.618, 
-      l786: maxPrice - range * 0.786,
-      ext1272: maxPrice + range * 0.272, 
-      ext1618: maxPrice + range * 0.618 
-    };
 
     // 只使用有效的斜率值（排除前60個點的0值）來計算百分位
     const validSlopes = data.filter((d, i) => i >= 60).map(d => d.slopeVal);
@@ -504,18 +542,40 @@ const App = () => {
       ? (validSlopes.sort((a, b) => a - b).filter(s => s < last.slopeVal).length / validSlopes.length) * 100
       : 50; // 如果沒有有效斜率，預設為50%
 
-    // === FIBO 評分 (35分) ===
+    // === FIBO 評分 ===
     let b_Fibo = 0;
     let s_Fibo = 0;
     const p = last.price;
-
-    // 線性映射函數
-    const map = (val, inMin, inMax, outMin, outMax) => {
-      const v = Math.max(Math.min(val, Math.max(inMin, inMax)), Math.min(inMin, inMax));
-      return outMin + (v - inMin) * (outMax - outMin) / (inMax - inMin);
-    };
+    const fiboMaxScore = is3231 ? 5 : 35; // 3231 最高 5 分，6669 最高 35 分
 
     if (fiboValid) {
+      if (is3231) {
+        // === 3231 緯創：短線波段版 FIBO 評分（5分） ===
+        // 買入評分（階梯式，無 K 線型態修正）
+        if (p > fibo.l500) {
+          b_Fibo = 0; // 上半部壓力區，無成本優勢
+        } else if (p > fibo.l786) {
+          b_Fibo = 3; // 下半部安全區，具備基礎安全邊際
+        } else {
+          b_Fibo = 5; // 底部超跌區，極具反彈潛力
+        }
+        
+        // 賣出評分（階梯式）
+        if (last.high >= fibo.ext1272) {
+          s_Fibo = 5; // 短線噴出，強烈建議賣出
+        } else if (last.high >= maxPrice) {
+          s_Fibo = 3; // 創新高，完成一個波段
+        } else {
+          s_Fibo = 0; // 尚未突破前高，不觸發賣訊
+        }
+      } else {
+        // === 6669：原版 FIBO 評分（35分） ===
+        // 線性映射函數
+        const map = (val, inMin, inMax, outMin, outMax) => {
+          const v = Math.max(Math.min(val, Math.max(inMin, inMax)), Math.min(inMin, inMax));
+          return outMin + (v - inMin) * (outMax - outMin) / (inMax - inMin);
+        };
+
         // 買入 - 線性給分
         let baseScore = 0;
         if (p > fibo.l236) {
@@ -550,180 +610,410 @@ const App = () => {
         else if (last.high >= fibo.ext1272) s_Fibo = 28; // 第一壓力
         else if (p > maxPrice) s_Fibo = 15; // 解套賣壓
         if (p < fibo.l618) s_Fibo = 35; // 停損
+      }
     }
 
     // === 動態斜率 (20分) - 線性給分 ===
-    // 買入 - 線性給分
-    let b_Slope_Rank = 0;
-    if (sPerc < 10) {
-      // 極度超跌區間：從 0% 到 10%，分數從 15 到 10
-      b_Slope_Rank = map(sPerc, 0, 10, 15, 10);
-    } else if (sPerc < 25) {
-      // 價值區間：從 10% 到 25%，分數從 10 到 5
-      b_Slope_Rank = map(sPerc, 10, 25, 10, 5);
-    } else if (sPerc < 40) {
-      // 初步區間：從 25% 到 40%，分數從 5 到 0
-      b_Slope_Rank = map(sPerc, 25, 40, 5, 0);
+    // 3231 不列入評分，6669 正常計算
+    let b_Hist = 0;
+    let s_Hist = 0;
+    
+    if (!is3231) {
+      // 6669：正常計算斜率評分
+      // 買入 - 線性給分
+      let b_Slope_Rank = 0;
+      if (sPerc < 10) {
+        // 極度超跌區間：從 0% 到 10%，分數從 15 到 10
+        b_Slope_Rank = map(sPerc, 0, 10, 15, 10);
+      } else if (sPerc < 25) {
+        // 價值區間：從 10% 到 25%，分數從 10 到 5
+        b_Slope_Rank = map(sPerc, 10, 25, 10, 5);
+      } else if (sPerc < 40) {
+        // 初步區間：從 25% 到 40%，分數從 5 到 0
+        b_Slope_Rank = map(sPerc, 25, 40, 5, 0);
+      }
+      const b_Slope_Mom = (last.slopeVal > prev.slopeVal) ? 5 : 0;
+      b_Hist = (b_Slope_Rank > 0) ? b_Slope_Rank + b_Slope_Mom : 0;
+
+      // 賣出 - 線性給分
+      let s_Slope_Rank = 0;
+      if (sPerc > 90) {
+        // 極度過熱區間：從 90% 到 100%，分數從 10 到 15
+        s_Slope_Rank = map(sPerc, 90, 100, 10, 15);
+      } else if (sPerc > 75) {
+        // 警戒區間：從 75% 到 90%，分數從 5 到 10
+        s_Slope_Rank = map(sPerc, 75, 90, 5, 10);
+      } else if (sPerc > 60) {
+        // 初步區間：從 60% 到 75%，分數從 0 到 5
+        s_Slope_Rank = map(sPerc, 60, 75, 0, 5);
+      }
+      const s_Slope_Mom = (last.slopeVal < prev.slopeVal) ? 5 : 0;
+      s_Hist = (s_Slope_Rank > 0) ? s_Slope_Rank + s_Slope_Mom : 0;
     }
-    const b_Slope_Mom = (last.slopeVal > prev.slopeVal) ? 5 : 0;
-    const b_Hist = (b_Slope_Rank > 0) ? b_Slope_Rank + b_Slope_Mom : 0;
+    // 3231：b_Hist 和 s_Hist 保持為 0（不列入評分）
 
-    // 賣出 - 線性給分
-    let s_Slope_Rank = 0;
-    if (sPerc > 90) {
-      // 極度過熱區間：從 90% 到 100%，分數從 10 到 15
-      s_Slope_Rank = map(sPerc, 90, 100, 10, 15);
-    } else if (sPerc > 75) {
-      // 警戒區間：從 75% 到 90%，分數從 5 到 10
-      s_Slope_Rank = map(sPerc, 75, 90, 5, 10);
-    } else if (sPerc > 60) {
-      // 初步區間：從 60% 到 75%，分數從 0 到 5
-      s_Slope_Rank = map(sPerc, 60, 75, 0, 5);
-    }
-    const s_Slope_Mom = (last.slopeVal < prev.slopeVal) ? 5 : 0;
-    const s_Hist = (s_Slope_Rank > 0) ? s_Slope_Rank + s_Slope_Mom : 0;
-
-    // === MA 季線 (7分) ===
-    const bias = last.ma60 ? (p - last.ma60) / last.ma60 * 100 : 0;
-    const maSlope = prev.ma60 && prev.ma60 !== 0 ? (last.ma60 - prev.ma60) / prev.ma60 : 0;
-    const last3Days = data.slice(-3);
-    const isBroken = last3Days.length === 3 && last3Days.every(d => d.price < d.ma60);
-
+    // === MA 評分 ===
+    const maMaxScore = is3231 ? 10 : 7; // 3231 權重 10 分（月線），6669 權重 7 分（季線）
     let b_MA = 0;
-    if (!isBroken) {
+    let s_MA = 0;
+    
+    if (is3231) {
+      // === 3231 緯創：短線波段版 MA 評分（10分，MA20月線） ===
+      const maValue = last.ma20; // 使用 MA20
+      const bias = maValue ? (p - maValue) / maValue * 100 : 0;
+      const isBroken = p < maValue; // 今日收盤價 < MA20
+      
+      // 買入評分（只看負乖離）
+      if (bias < -6) b_MA = 10; // 急跌超賣區，滿分
+      else if (bias < -3) b_MA = 6; // 顯著負乖離
+      else if (bias <= 0) b_MA = 3; // 回測支撐
+      // bias > 0 給 0 分
+      
+      // 賣出評分（正乖離 + 跌破）
+      if (bias > 8) s_MA = 10; // 急漲超買區，滿分
+      else if (bias > 4) s_MA = 6; // 獲利警戒區
+      // bias <= 4% 給 0 分（但可能被跌破分數覆蓋）
+      
+      // 跌破分數（停利/停損）
+      if (isBroken) {
+        s_MA = Math.max(s_MA, 3); // 至少給 3 分
+      }
+      
+      b_MA = Math.min(maMaxScore, b_MA);
+      s_MA = Math.min(maMaxScore, s_MA);
+    } else {
+      // === 6669：原版 MA 評分（7分，MA60季線） ===
+      const bias = last.ma60 ? (p - last.ma60) / last.ma60 * 100 : 0;
+      const maSlope = prev.ma60 && prev.ma60 !== 0 ? (last.ma60 - prev.ma60) / prev.ma60 : 0;
+      const last3Days = data.slice(-3);
+      const isBroken = last3Days.length === 3 && last3Days.every(d => d.price < d.ma60);
+
+      if (!isBroken) {
         if (maSlope > 0) b_MA += 3;
         if (bias > 0 && bias <= 5) b_MA += 4;
         else if (bias > 5 && bias <= 10) b_MA += 2;
         else if (bias < 0 && maSlope > 0) b_MA += 1;
+      }
+      
+      if (maSlope < 0) s_MA += 3;
+      if (bias > 25) s_MA += 4;
+      else if (bias > 15) s_MA += 2;
+      if (isBroken) s_MA = Math.max(s_MA, 3);
+      b_MA = Math.min(7, b_MA);
+      s_MA = Math.min(7, s_MA);
     }
-    
-    let s_MA = 0;
-    if (maSlope < 0) s_MA += 3;
-    if (bias > 25) s_MA += 4;
-    else if (bias > 15) s_MA += 2;
-    if (isBroken) s_MA = Math.max(s_MA, 3);
-    b_MA = Math.min(7, b_MA);
-    s_MA = Math.min(7, s_MA);
 
-    // === KD (10分) ===
-    // 買入
-    let b_KD_Pos = 0;
-    if (last.k < 20) b_KD_Pos = 4;
-    else if (last.k < 40) b_KD_Pos = 2;
-    let b_KD_Sig = 0;
-    if (prev.k !== undefined && prev.d !== undefined && prev.k < prev.d && last.k > last.d) {
-        if (last.k < 20) b_KD_Sig = 6;
-        else if (last.k < 50) b_KD_Sig = 3;
-    }
-    // 背離加分
+    // === KD 評分 ===
+    const kdMaxScore = is3231 ? 25 : 10; // 3231 權重 25 分，6669 權重 10 分
+    let b_KD = 0;
+    let s_KD = 0;
+    
+    // 背離判斷（兩者共用）
     const lookback20 = data.slice(-22, -2);
+    let hasDivergence = false;
     if (lookback20.length > 0) {
         const minP = Math.min(...lookback20.map(d=>d.price));
         const minK = Math.min(...lookback20.map(d=>d.k));
-        if (p < minP && last.k > minK) b_KD_Pos = 10; // 背離直接滿分
+        if (p < minP && last.k > minK) hasDivergence = true; // 價格背離
     }
-    const b_KD = Math.min(10, b_KD_Pos + b_KD_Sig);
+    
+    if (is3231) {
+      // === 3231 緯創：短線波段版 KD 評分（25分） ===
+      // 買入評分
+      let b_KD_Pos = 0;
+      if (last.k < 20) b_KD_Pos = 15; // 極度超賣區
+      else if (last.k < 30) b_KD_Pos = 5; // 超賣邊緣
+      // K >= 30 給 0 分
+      
+      let b_KD_Sig = 0;
+      // 金叉訊號
+      if (prev.k !== undefined && prev.d !== undefined && prev.k < prev.d && last.k > last.d) {
+        if (last.k < 50) b_KD_Sig = 10; // 低檔金叉確認
+        // K >= 50 給 0 分
+      }
+      
+      // 背離加分（優先級最高，直接滿分）
+      if (hasDivergence) {
+        b_KD = kdMaxScore; // 25 分滿分
+      } else {
+        b_KD = Math.min(kdMaxScore, b_KD_Pos + b_KD_Sig);
+      }
+      
+      // 賣出評分
+      let s_KD_Pos = 0;
+      if (last.k > 80) s_KD_Pos = 25; // 極度超買區，直接滿分
+      else if (last.k > 70) s_KD_Pos = 15; // 警戒區
+      // K <= 70 給 0 分
+      
+      // 3231 不等待死叉，不設訊號分數，也不設鈍化保護
+      s_KD = s_KD_Pos; // 只看位階分數
+    } else {
+      // === 6669：原版 KD 評分（10分） ===
+      // 買入
+      let b_KD_Pos = 0;
+      if (last.k < 20) b_KD_Pos = 4;
+      else if (last.k < 40) b_KD_Pos = 2;
+      let b_KD_Sig = 0;
+      if (prev.k !== undefined && prev.d !== undefined && prev.k < prev.d && last.k > last.d) {
+        if (last.k < 20) b_KD_Sig = 6;
+        else if (last.k < 50) b_KD_Sig = 3;
+      }
+      // 背離加分
+      if (hasDivergence) {
+        b_KD_Pos = 10; // 背離直接滿分
+      }
+      b_KD = Math.min(10, b_KD_Pos + b_KD_Sig);
 
-    // 賣出
-    let s_KD_Pos = 0;
-    if (last.k > 80) s_KD_Pos = 3;
-    else if (last.k > 70) s_KD_Pos = 1;
-    let s_KD_Sig = 0;
-    if (prev.k !== undefined && prev.d !== undefined && prev.k > prev.d && last.k < last.d) {
+      // 賣出
+      let s_KD_Pos = 0;
+      if (last.k > 80) s_KD_Pos = 3;
+      else if (last.k > 70) s_KD_Pos = 1;
+      let s_KD_Sig = 0;
+      if (prev.k !== undefined && prev.d !== undefined && prev.k > prev.d && last.k < last.d) {
         if (last.k > 80) s_KD_Sig = 7;
         else if (last.k > 50) s_KD_Sig = 4;
+      }
+      // 鈍化保護
+      const last3K = data.slice(-3).map(d => d.k);
+      const last3D = data.slice(-3).map(d => d.d);
+      const isPassivation = last3K.length === 3 && last3K.every(k => k > 80) && last3K.every((k,i) => k > last3D[i]);
+      
+      s_KD = Math.min(10, s_KD_Pos + s_KD_Sig);
+      if (isPassivation) s_KD = 0;
     }
-    // 鈍化保護
-    const last3K = data.slice(-3).map(d => d.k);
-    const last3D = data.slice(-3).map(d => d.d);
-    const isPassivation = last3K.length === 3 && last3K.every(k => k > 80) && last3K.every((k,i) => k > last3D[i]);
-    
-    let s_KD = Math.min(10, s_KD_Pos + s_KD_Sig);
-    if (isPassivation) s_KD = 0;
 
-    // === RSI (10分) ===
+    // === RSI 評分 ===
+    const rsiMaxScore = is3231 ? 25 : 10; // 3231 權重 25 分，6669 權重 10 分
     let b_RSI = 0;
-    if (last.rsiVal < 30) b_RSI = 7;
-    else if (last.rsiVal < 50) b_RSI = 5;
-    else if (last.rsiVal < 60) b_RSI = 2;
-    if (prev.rsiVal !== undefined && prev.rsiVal <= 50 && last.rsiVal > 50) b_RSI += 2; // 突破50
-    // 底背離
-    if (lookback20.length > 0) {
-         const minR = Math.min(...lookback20.map(d=>d.rsiVal));
-         if (p < Math.min(...lookback20.map(d=>d.price)) && last.rsiVal > minR) b_RSI += 3;
-    }
-    b_RSI = Math.min(10, b_RSI);
-
     let s_RSI = 0;
-    if (last.rsiVal > 80) s_RSI = 7;
-    else if (last.rsiVal > 70) s_RSI = 5;
-    else if (last.rsiVal > 60) s_RSI = 2;
-    if (prev.rsiVal !== undefined && prev.rsiVal >= 50 && last.rsiVal < 50) s_RSI += 2; // 跌破50
-    s_RSI = Math.min(10, s_RSI);
-
-    // === MACD (7分) ===
-    let b_MACD = 0;
-    if (prev.macd !== undefined && last.macd < 0 && last.macd > prev.macd) b_MACD += 3; // 紅收斂
-    if (prev.macd !== undefined && prev.macd < 0 && last.macd > 0) b_MACD += 2; // 金叉
-    // 底背離
+    
+    // 背離判斷（兩者共用）
+    let hasRSIBuyDivergence = false; // 底背離
+    let hasRSISellDivergence = false; // 頂背離
     if (lookback20.length > 0) {
+      const minR = Math.min(...lookback20.map(d=>d.rsiVal));
+      const maxR = Math.max(...lookback20.map(d=>d.rsiVal));
+      const minP = Math.min(...lookback20.map(d=>d.price));
+      const maxP = Math.max(...lookback20.map(d=>d.price));
+      
+      // 底背離：價格創新低但 RSI 未創新低
+      if (p < minP && last.rsiVal > minR) {
+        hasRSIBuyDivergence = true;
+      }
+      
+      // 頂背離：價格創新高但 RSI 未創新高
+      if (p > maxP && last.rsiVal < maxR) {
+        hasRSISellDivergence = true;
+      }
+    }
+    
+    if (is3231) {
+      // === 3231 緯創：短線波段版 RSI 評分（25分） ===
+      // 買入評分
+      let b_RSI_Pos = 0;
+      if (last.rsiVal < 30) b_RSI_Pos = 15; // 極度超賣區
+      else if (last.rsiVal < 45) b_RSI_Pos = 5; // 弱勢整理區
+      // RSI >= 45 給 0 分
+      
+      // 底背離加分（優先級最高，直接滿分）
+      if (hasRSIBuyDivergence) {
+        b_RSI = rsiMaxScore; // 25 分滿分
+      } else {
+        b_RSI = b_RSI_Pos; // 只看位階分數
+      }
+      
+      // 賣出評分
+      let s_RSI_Pos = 0;
+      if (last.rsiVal > 75) s_RSI_Pos = 25; // 極度超買區，直接滿分
+      else if (last.rsiVal > 60) s_RSI_Pos = 10; // 相對高檔
+      // RSI <= 60 給 0 分
+      
+      // 頂背離加分（優先級最高，直接滿分）
+      if (hasRSISellDivergence) {
+        s_RSI = rsiMaxScore; // 25 分滿分
+      } else {
+        s_RSI = s_RSI_Pos; // 只看位階分數
+      }
+    } else {
+      // === 6669：原版 RSI 評分（10分） ===
+      // 買入
+      if (last.rsiVal < 30) b_RSI = 7;
+      else if (last.rsiVal < 50) b_RSI = 5;
+      else if (last.rsiVal < 60) b_RSI = 2;
+      if (prev.rsiVal !== undefined && prev.rsiVal <= 50 && last.rsiVal > 50) b_RSI += 2; // 突破50
+      // 底背離
+      if (hasRSIBuyDivergence) {
+        b_RSI += 3;
+      }
+      b_RSI = Math.min(10, b_RSI);
+
+      // 賣出
+      if (last.rsiVal > 80) s_RSI = 7;
+      else if (last.rsiVal > 70) s_RSI = 5;
+      else if (last.rsiVal > 60) s_RSI = 2;
+      if (prev.rsiVal !== undefined && prev.rsiVal >= 50 && last.rsiVal < 50) s_RSI += 2; // 跌破50
+      s_RSI = Math.min(10, s_RSI);
+    }
+
+    // === MACD 評分 ===
+    const macdMaxScore = is3231 ? 5 : 7; // 3231 權重 5 分，6669 權重 7 分
+    let b_MACD = 0;
+    let s_MACD = 0;
+    
+    if (is3231) {
+      // === 3231 緯創：短線波段版 MACD 評分（5分） ===
+      // 買入評分
+      let goldCross = 0; // 黃金交叉
+      let redConverge = 0; // 紅柱收斂
+      
+      // 黃金交叉（優先級最高）
+      if (prev.macd !== undefined && prev.macd < 0 && last.macd > 0) {
+        goldCross = 5; // 滿分
+      }
+      
+      // 紅柱收斂（止跌訊號）
+      if (prev.macd !== undefined && last.macd < 0 && last.macd > prev.macd) {
+        redConverge = 3; // 基礎分
+      }
+      // 紅柱擴大（殺盤持續）給 0 分，不需要特別處理
+      
+      b_MACD = Math.max(goldCross, redConverge); // 取最大值
+      b_MACD = Math.min(macdMaxScore, b_MACD);
+      
+      // 賣出評分
+      let deathCross = 0; // 死亡交叉
+      let greenConverge = 0; // 綠柱收斂
+      
+      // 死亡交叉（優先級最高）
+      if (prev.macd !== undefined && prev.macd > 0 && last.macd < 0) {
+        deathCross = 5; // 滿分
+      }
+      
+      // 綠柱收斂（上攻無力）
+      if (prev.macd !== undefined && last.macd > 0 && last.macd < prev.macd) {
+        greenConverge = 3; // 基礎分
+      }
+      // 綠柱擴大（主升段）給 0 分，不需要特別處理
+      
+      s_MACD = Math.max(deathCross, greenConverge); // 取最大值
+      s_MACD = Math.min(macdMaxScore, s_MACD);
+    } else {
+      // === 6669：原版 MACD 評分（7分） ===
+      if (prev.macd !== undefined && last.macd < 0 && last.macd > prev.macd) b_MACD += 3; // 紅收斂
+      if (prev.macd !== undefined && prev.macd < 0 && last.macd > 0) b_MACD += 2; // 金叉
+      // 底背離
+      if (lookback20.length > 0) {
         const minO = Math.min(...lookback20.map(d=>d.macd));
         if (p < Math.min(...lookback20.map(d=>d.price)) && last.macd > minO && last.macd < 0) b_MACD += 2;
-    }
-    b_MACD = Math.min(7, b_MACD);
+      }
+      b_MACD = Math.min(7, b_MACD);
 
-    let s_MACD = 0;
-    if (prev.macd !== undefined && last.macd > 0 && last.macd < prev.macd) s_MACD += 3; // 綠收斂
-    if (prev.macd !== undefined && prev.macd > 0 && last.macd < 0) s_MACD += 2; // 死叉
-    s_MACD = Math.min(7, s_MACD);
+      if (prev.macd !== undefined && last.macd > 0 && last.macd < prev.macd) s_MACD += 3; // 綠收斂
+      if (prev.macd !== undefined && prev.macd > 0 && last.macd < 0) s_MACD += 2; // 死叉
+      s_MACD = Math.min(7, s_MACD);
+    }
 
     // === DMI (6分) ===
+    // 3231 不列入評分，6669 正常計算
     let b_DMI = 0;
-    if (last.pdi !== undefined && last.mdi !== undefined && last.pdi > last.mdi) {
+    let s_DMI = 0;
+    
+    if (!is3231) {
+      // 6669：正常計算 DMI 評分
+      if (last.pdi !== undefined && last.mdi !== undefined && last.pdi > last.mdi) {
         b_DMI += 2;
         if (prev.pdi !== undefined && prev.mdi !== undefined && prev.pdi <= prev.mdi && last.pdi > last.mdi) b_DMI += 1;
         if (prev.adx !== undefined && last.adx > 25 && last.adx > prev.adx) b_DMI += 3;
         else if (prev.adx !== undefined && last.adx < 25 && last.adx > prev.adx) b_DMI += 1;
-    }
-    if (last.adx > 50) b_DMI -= 1;
-    b_DMI = Math.max(0, Math.min(6, b_DMI));
+      }
+      if (last.adx > 50) b_DMI -= 1;
+      b_DMI = Math.max(0, Math.min(6, b_DMI));
 
-    let s_DMI = 0;
-    if (last.pdi !== undefined && last.mdi !== undefined && last.mdi > last.pdi) {
+      if (last.pdi !== undefined && last.mdi !== undefined && last.mdi > last.pdi) {
         s_DMI += 2;
         if (prev.adx !== undefined && last.adx > 25 && last.adx > prev.adx) s_DMI += 3;
+      }
+      s_DMI = Math.min(6, s_DMI);
     }
-    s_DMI = Math.min(6, s_DMI);
+    // 3231：b_DMI 和 s_DMI 保持為 0（不列入評分）
 
     // 組合分數
-    const b_Trend = b_MA + b_MACD + b_DMI;
-    const s_Trend = s_MA + s_MACD + s_DMI;
+    // 3231：趨勢綜合不包含 DMI（只有 MA + MACD）
+    // 6669：趨勢綜合包含 MA + MACD + DMI
+    const b_Trend = is3231 ? (b_MA + b_MACD) : (b_MA + b_MACD + b_DMI);
+    const s_Trend = is3231 ? (s_MA + s_MACD) : (s_MA + s_MACD + s_DMI);
     const b_Osc = b_RSI + b_KD;
     const s_Osc = s_RSI + s_KD;
 
-    // === BB (5分) ===
+    // === BB 評分 ===
+    // 3231 使用 30 分權重（短線波段），6669 使用 5 分權重（輔助）
     const pb = last.pctB ?? 0.5;
     let b_BB = 0;
-    if (pb < 0) b_BB = 3;
-    else if (pb < 0.1) b_BB = 2;
-    // 中軌回測
-    if (last.mid && prev.mid && last.mid !== 0) {
-      const midSlope = (last.mid - prev.mid);
-      const distToMid = Math.abs((p - last.mid) / last.mid);
-      if (midSlope > 0 && distToMid < 0.01) b_BB = 2;
-    }
-    b_BB = Math.min(5, b_BB);
-
     let s_BB = 0;
-    if (pb > 1.1) s_BB = 3;
-    else if (pb > 1.0) s_BB = 1;
-    // 假突破
-    if (last.high && last.upper && last.high > last.upper && p < last.upper) s_BB = 2;
-    // 開口爆量保護
-    const bwOpen = prev.bandWidth !== undefined && last.bandWidth !== undefined ? (last.bandWidth > prev.bandWidth) : false;
-    const volExp = last.volume !== undefined && last.volMA5 !== undefined ? (last.volume > (last.volMA5 * 1.5)) : false;
-    if (bwOpen && volExp && s_BB > 0) s_BB = 0;
-    s_BB = Math.min(5, s_BB);
+    const bbMaxScore = is3231 ? 30 : 5; // 3231 權重 30%，6669 權重 5%
+    
+    if (is3231) {
+      // === 3231 緯創：短線波段版布林評分 (30分，線性給分) ===
+      // 線性映射函數
+      const map = (val, inMin, inMax, outMin, outMax) => {
+        const v = Math.max(Math.min(val, Math.max(inMin, inMax)), Math.min(inMin, inMax));
+        return outMin + (v - inMin) * (outMax - outMin) / (inMax - inMin);
+      };
+      
+      // 【買入評分】抓下軌反彈（線性給分）
+      if (pb < 0) {
+        b_BB = 30; // 跌破下軌，超跌：滿分
+      } else if (pb < 0.1) {
+        // 0 <= %B < 0.1：從 30 到 25 分線性映射
+        b_BB = map(pb, 0, 0.1, 30, 25);
+      } else if (pb < 0.3) {
+        // 0.1 <= %B < 0.3：從 25 到 10 分線性映射
+        b_BB = map(pb, 0.1, 0.3, 25, 10);
+      } else {
+        b_BB = 0; // %B >= 0.3：0分
+      }
+      b_BB = Math.min(30, Math.max(0, b_BB));
+      
+      // 【賣出評分】抓上軌獲利，有賺就跑（線性給分）
+      if (pb > 1.0) {
+        s_BB = 30; // 突破上軌：滿分
+      } else if (pb > 0.9) {
+        // 0.9 < %B <= 1.0：從 25 到 30 分線性映射
+        s_BB = map(pb, 0.9, 1.0, 25, 30);
+      } else {
+        s_BB = 0; // %B <= 0.9：0分（但可能被假突破覆蓋）
+      }
+      
+      // 假突破（最高價 > 上軌 且 收盤價 < 上軌）
+      if (last.high && last.upper && last.high > last.upper && p < last.upper) {
+        s_BB = Math.max(s_BB, 20); // 假突破至少 20 分
+      }
+      // 注意：3231 移除開口爆量保護機制（短線波段，爆量即過熱，應該賣）
+      s_BB = Math.min(30, Math.max(0, s_BB));
+    } else {
+      // === 6669：原版布林評分 (5分) ===
+      // 【買入評分】
+      if (pb < 0) b_BB = 3;
+      else if (pb < 0.1) b_BB = 2;
+      // 中軌回測
+      if (last.mid && prev.mid && last.mid !== 0) {
+        const midSlope = (last.mid - prev.mid);
+        const distToMid = Math.abs((p - last.mid) / last.mid);
+        if (midSlope > 0 && distToMid < 0.01) b_BB = 2;
+      }
+      b_BB = Math.min(5, b_BB);
+      
+      // 【賣出評分】
+      if (pb > 1.1) s_BB = 3;
+      else if (pb > 1.0) s_BB = 1;
+      // 假突破
+      if (last.high && last.upper && last.high > last.upper && p < last.upper) s_BB = 2;
+      // 開口爆量保護（6669 保留此機制）
+      const bwOpen = prev.bandWidth !== undefined && last.bandWidth !== undefined ? (last.bandWidth > prev.bandWidth) : false;
+      const volExp = last.volume !== undefined && last.volMA5 !== undefined ? (last.volume > (last.volMA5 * 1.5)) : false;
+      if (bwOpen && volExp && s_BB > 0) s_BB = 0;
+      s_BB = Math.min(5, s_BB);
+    }
 
     const b_Vol = b_BB;
     const s_Vol = s_BB;
@@ -734,20 +1024,54 @@ const App = () => {
 
     // 訊號判斷
     let buySignal = { text: '觀望', color: 'text-neutral-500' };
-    if (totalBuyScore > 50) buySignal = { text: '強力買進', color: 'text-emerald-400 font-bold' };
-    else if (totalBuyScore > 40) buySignal = { text: '分批佈局', color: 'text-cyan-400' };
-    else if (totalBuyScore >= 20) buySignal = { text: '中性觀察', color: 'text-blue-400' };
-    
-    if (maSlope < 0 && totalBuyScore > 20) buySignal = { text: '逆勢 (停止買入)', color: 'text-neutral-500' };
+    if (is3231) {
+      // 3231 緯創：短線波段版買入標準
+      if (totalBuyScore > 60) buySignal = { text: '強力買進 (Strong Buy)', color: 'text-emerald-400 font-bold' };
+      else if (totalBuyScore > 45) buySignal = { text: '嘗試進場 (Try Buy)', color: 'text-cyan-400' };
+      else if (totalBuyScore >= 20) buySignal = { text: '中性觀察', color: 'text-blue-400' };
+      // < 20 分：觀望（預設值）
+      
+      if (maSlope < 0 && totalBuyScore > 20) buySignal = { text: '逆勢 (停止買入)', color: 'text-neutral-500' };
+    } else {
+      // 6669：原版買入標準
+      if (totalBuyScore > 50) buySignal = { text: '強力買進', color: 'text-emerald-400 font-bold' };
+      else if (totalBuyScore > 40) buySignal = { text: '分批佈局', color: 'text-cyan-400' };
+      else if (totalBuyScore >= 20) buySignal = { text: '中性觀察', color: 'text-blue-400' };
+      
+      if (maSlope < 0 && totalBuyScore > 20) buySignal = { text: '逆勢 (停止買入)', color: 'text-neutral-500' };
+    }
 
     let sellSignal = { text: '續抱', color: 'text-emerald-400' };
-    if (totalSellScore > 55) sellSignal = { text: '清倉賣出', color: 'text-rose-500 font-bold' };
-    else if (totalSellScore > 40) sellSignal = { text: '調節警戒', color: 'text-orange-400' };
+    if (is3231) {
+      // 3231 緯創：短線波段版賣出標準
+      if (totalSellScore > 60) sellSignal = { text: '清倉賣出 (Clear Out)', color: 'text-rose-500 font-bold' };
+      else if (totalSellScore > 40) sellSignal = { text: '獲利調節 (Trim)', color: 'text-orange-400' };
+      // <= 40 分：續抱（預設值）
+    } else {
+      // 6669：原版賣出標準
+      if (totalSellScore > 55) sellSignal = { text: '清倉賣出', color: 'text-rose-500 font-bold' };
+      else if (totalSellScore > 40) sellSignal = { text: '調節警戒', color: 'text-orange-400' };
+    }
     
-    if (p < fibo.l618) sellSignal = { text: '破線 (強制停損)', color: 'text-red-600 font-black animate-pulse' };
+    // 6669 的停損判斷（3231 不使用此邏輯）
+    if (!is3231 && fibo.l618 && p < fibo.l618) {
+      sellSignal = { text: '破線 (強制停損)', color: 'text-red-600 font-black animate-pulse' };
+    }
 
+    // 計算 maSlope 和 bias（用於顯示和霸王條款判斷）
+    const maValue = is3231 ? last.ma20 : last.ma60;
+    const prevMaValue = is3231 ? prev.ma20 : prev.ma60;
+    const bias = maValue ? (p - maValue) / maValue * 100 : 0;
+    const maSlope = prevMaValue && prevMaValue !== 0 ? (maValue - prevMaValue) / prevMaValue : 0;
+    const isBroken = is3231 ? (p < maValue) : (data.slice(-3).length === 3 && data.slice(-3).every(d => d.price < d.ma60));
+    
     return { 
-      last, prev, fibo, sPerc, maxPrice, minPrice, bias, maSlope, isBroken, fiboValid: true,
+      last, prev, fibo, sPerc, maxPrice, minPrice, bias, maSlope, isBroken, fiboValid: fiboValid,
+      fiboMaxScore: fiboMaxScore, // 傳遞 FIBO 最大分數，用於顯示
+      kdMaxScore: kdMaxScore, // 傳遞 KD 最大分數，用於顯示
+      rsiMaxScore: rsiMaxScore, // 傳遞 RSI 最大分數，用於顯示
+      maMaxScore: maMaxScore, // 傳遞 MA 最大分數，用於顯示
+      macdMaxScore: macdMaxScore, // 傳遞 MACD 最大分數，用於顯示
       scores: {
         fibo: { buy: b_Fibo, sell: s_Fibo },
         slope: { buy: b_Hist, sell: s_Hist },
@@ -764,9 +1088,10 @@ const App = () => {
       buy: { total: totalBuyScore, signal: buySignal },
       sell: { total: totalSellScore, signal: sellSignal },
       buyTotal: totalBuyScore,
-      sellTotal: totalSellScore
+      sellTotal: totalSellScore,
+      bbMaxScore: bbMaxScore // 傳遞布林最大分數，用於顯示
     };
-  }, [data]);
+  }, [data, stockSymbol]);
 
   const navScroll = (dir) => {
     if (!chartRef.current) return;
@@ -831,11 +1156,22 @@ const App = () => {
     </div>
   );
 
-  const diagnosticCards = [
+  const diagnosticCards = useMemo(() => {
+    const bbWeight = analysis?.bbMaxScore || 5;
+    const fiboWeight = analysis?.fiboMaxScore || 35;
+    const is3231 = stockSymbol === '3231';
+    
+    return [
     { 
-      key: 'slope', title: '動態斜率 (Slope)', val: `${analysis?.sPerc?.toFixed(1) ?? '--'}%`, 
-      desc: '比較今日漲速與歷史排名。拆解為「位階」與「動能」給分。', 
-      info: `權重：20% (位階15+動能5)\n\n【買入評分 - 線性給分】\n● PR < 10: 15-10分 (線性，PR越低分數越高)\n● PR 10-25: 10-5分 (線性分配)\n● PR 25-40: 5-0分 (線性分配)\n● 動能: 向上勾頭且有位階分才觸發 +5分\n\n【賣出評分 - 線性給分】\n● PR > 90: 10-15分 (線性，PR越高分數越高)\n● PR 75-90: 5-10分 (線性分配)\n● PR 60-75: 0-5分 (線性分配)\n● 動能: 向下勾頭且有位階分才觸發 +5分`,
+      key: 'slope', 
+      title: '動態斜率 (Slope)', 
+      val: `${analysis?.sPerc?.toFixed(1) ?? '--'}%`, 
+      desc: is3231
+        ? '不列入評分。短線操作專注轉折，不依賴歷史位階。'
+        : '比較今日漲速與歷史排名。拆解為「位階」與「動能」給分。', 
+      info: is3231
+        ? `不列入評分 (3231 短線波段版)\n\n3231 策略專注短線轉折指標（RSI、KD、BB），\n不依賴歷史位階判斷，因此斜率不列入評分。\n\n(僅供參考，不影響總分計算)`
+        : `權重：20% (位階15+動能5)\n\n【買入評分 - 線性給分】\n● PR < 10: 15-10分 (線性，PR越低分數越高)\n● PR 10-25: 10-5分 (線性分配)\n● PR 25-40: 5-0分 (線性分配)\n● 動能: 向上勾頭且有位階分才觸發 +5分\n\n【賣出評分 - 線性給分】\n● PR > 90: 10-15分 (線性，PR越高分數越高)\n● PR 75-90: 5-10分 (線性分配)\n● PR 60-75: 0-5分 (線性分配)\n● 動能: 向下勾頭且有位階分才觸發 +5分`,
       diag: (p) => {
         if (p === undefined) return { t: "分析中...", c: "text-neutral-500" };
         return p > 90 ? { t: "【歷史高檔】噴發極端，風險高。", c: "text-rose-400" } : p < 15 ? { t: "【歷史低檔】超跌區間，反彈機會。", c: "text-blue-400" } : { t: "【常態波動】無顯著訊號。", c: "text-emerald-400" };
@@ -851,77 +1187,135 @@ const App = () => {
       }
     },
     { 
-      key: 'rsi', title: 'RSI 相對強弱', val: analysis ? Math.round(analysis.last.rsiVal) : '--', 
-      desc: '震盪權重 10%。反映市場情緒。低檔 (<60) 適合佈局，高檔 (>40) 適合調節。', 
-      info: `權重：10%\n\n【買入評分】\n● RSI < 60 開始給分，< 30 滿分\n\n【賣出評分】\n● RSI > 40 開始給分，> 80 滿分`,
+      key: 'rsi', 
+      title: 'RSI 相對強弱', 
+      val: analysis ? Math.round(analysis.last.rsiVal) : '--', 
+      desc: is3231
+        ? `核心權重 ${analysis?.rsiMaxScore || 25}%。短線震盪指標。RSI<30 極度超賣滿分，RSI>75 直接賣出。背離直接滿分。`
+        : `震盪權重 ${analysis?.rsiMaxScore || 10}%。反映市場情緒。低檔 (<60) 適合佈局，高檔 (>40) 適合調節。`, 
+      info: is3231
+        ? `權重：${analysis?.rsiMaxScore || 25}% (短線波段版，核心震盪指標)\n\n【買入評分 - 階梯式】\n● RSI < 30：15分 (極度超賣區)\n● 30 <= RSI < 45：5分 (弱勢整理區)\n● RSI >= 45：0分 (無便宜可撿)\n\n【底背離加分】\n● 價格背離：直接滿分 25分 (強力買訊)\n\n【賣出評分 - 階梯式】\n● RSI > 75：25分 (極度超買，直接滿分賣出)\n● 60 < RSI <= 75：10分 (相對高檔，分批調節)\n● RSI <= 60：0分 (安全區，續抱)\n\n【頂背離加分】\n● 價格背離：直接滿分 25分 (假突破，強力賣訊)\n\n(移除突破/跌破50加分，短線操作不等待)`
+        : `權重：${analysis?.rsiMaxScore || 10}%\n\n【買入評分】\n● RSI < 60 開始給分，< 30 滿分\n● 突破50：+2分\n● 底背離：+3分\n\n【賣出評分】\n● RSI > 40 開始給分，> 80 滿分\n● 跌破50：+2分`,
       diag: (r) => {
         if (r === undefined) return { t: "分析中...", c: "text-neutral-500" };
         return r > 75 ? { t: "【過熱】RSI高檔鈍化。", c: "text-rose-400" } : r < 35 ? { t: "【超賣】RSI低檔背離。", c: "text-blue-400" } : { t: "【中性】力道均衡。", c: "text-emerald-400" };
       }
     },
     { 
-      key: 'kd', title: 'KD 隨機指標', val: analysis ? `K:${Math.round(analysis.last.k)}` : '--', 
-      desc: '震盪權重 10%。K值反應靈敏。K<20 強力買訊，K>80 若鈍化則不賣。', 
-      info: `權重：10% (位階+訊號)\n\n【買入】\n● K<20 (4分), 20-40 (2分)\n● 低檔金叉 (+6), 中低檔 (+3)\n● 背離 (滿分)\n\n【賣出】\n● K>80 (3分), 70-80 (1分)\n● 高檔死叉 (+7), 中高檔 (+4)\n● 鈍化保護: 0分`,
+      key: 'kd', 
+      title: 'KD 隨機指標', 
+      val: analysis ? `K:${Math.round(analysis.last.k)}` : '--', 
+      desc: is3231
+        ? `核心權重 ${analysis?.kdMaxScore || 25}%。短線轉折指標。K<20 極度超賣滿分，K>80 直接賣出。無鈍化保護，有賺就跑。`
+        : `震盪權重 ${analysis?.kdMaxScore || 10}%。K值反應靈敏。K<20 強力買訊，K>80 若鈍化則不賣。`, 
+      info: is3231
+        ? `權重：${analysis?.kdMaxScore || 25}% (短線波段版，核心轉折指標)\n\n【買入評分 - 階梯式】\n● K < 20：15分 (極度超賣區)\n● 20 <= K < 30：5分 (超賣邊緣)\n● K >= 30：0分 (位階不夠低)\n\n【金叉訊號】\n● K < 50 時金叉：+10分 (確認動能翻多)\n● K >= 50 時金叉：0分 (高檔金叉，利潤不足)\n\n【背離加分】\n● 價格背離：直接滿分 25分 (強力買訊)\n\n【賣出評分 - 只看位階】\n● K > 80：25分 (極度超買，直接滿分賣出)\n● 70 < K <= 80：15分 (警戒區，分批調節)\n● K <= 70：0分 (安全區，續抱)\n\n(不等待死叉，無鈍化保護)`
+        : `權重：${analysis?.kdMaxScore || 10}% (位階+訊號)\n\n【買入】\n● K<20 (4分), 20-40 (2分)\n● 低檔金叉 (+6), 中低檔 (+3)\n● 背離 (滿分)\n\n【賣出】\n● K>80 (3分), 70-80 (1分)\n● 高檔死叉 (+7), 中高檔 (+4)\n● 鈍化保護: 0分`,
       diag: (k) => k > 80 ? { t: "【高檔】K值過高，防回檔。", c: "text-rose-400" } : k < 20 ? { t: "【低檔】K值過低，醞釀反彈。", c: "text-blue-400" } : { t: "【區間整理】K值位於 20-80。", c: "text-emerald-400" }
     },
     { 
-      key: 'bb', title: 'Bollinger 布林', val: analysis ? `%B:${analysis.last.pctB?.toFixed(2)}` : '--', 
-      desc: '波動權重 5%。%B < 0 極端超跌，> 1.1 極端乖離。引入開口與爆量保護。', 
-      info: `權重：5% (%B策略)\n\n【買入評分】\n● %B < 0：極端超賣 (3分)\n● %B < 0.1：下軌支撐 (2分)\n● 回測中軌：強勢回檔 (2分)\n\n【賣出評分】\n● %B > 1.1：懸空噴出 (3分)\n● %B > 1.0：突破上軌 (1分)\n● 假突破：(2分)\n● 保護：爆量打開開口 -> 0分`,
+      key: 'bb', 
+      title: 'Bollinger 布林', 
+      val: analysis ? `%B:${analysis.last.pctB?.toFixed(2)}` : '--', 
+      desc: is3231 
+        ? `波動權重 ${bbWeight}%。短線波段策略。%B < 0 超跌滿分，> 1.0 突破上軌滿分。有賺就跑，不設保護。`
+        : `波動權重 ${bbWeight}%。%B < 0 極端超跌，> 1.1 極端乖離。引入開口與爆量保護。`, 
+      info: is3231
+        ? `權重：${bbWeight}% (短線波段策略)\n\n【買入評分】\n● %B < 0：超跌滿分 (30分)\n● %B < 0.1：極限接近下軌 (25分)\n● %B < 0.3：相對低檔 (10分)\n\n【賣出評分】\n● %B > 1.0：突破上軌滿分 (30分)\n● %B > 0.9：接近上軌壓力 (25分)\n● 假突破：上攻失敗 (20分)\n\n(移除爆量保護，有賺就跑)`
+        : `權重：${bbWeight}% (%B策略)\n\n【買入評分】\n● %B < 0：極端超賣 (3分)\n● %B < 0.1：下軌支撐 (2分)\n● 回測中軌：強勢回檔 (2分)\n\n【賣出評分】\n● %B > 1.1：懸空噴出 (3分)\n● %B > 1.0：突破上軌 (1分)\n● 假突破：(2分)\n● 保護：爆量打開開口 -> 0分`,
       diag: (l) => {
         if (!l) return { t: "分析中...", c: "text-neutral-500" };
         return l.pctB > 1.1 ? { t: "【極端乖離】懸空噴出，不可持續。", c: "text-rose-400" } : l.pctB < 0 ? { t: "【極端超跌】跌出通道，隨時反彈。", c: "text-blue-400" } : { t: "【常態】軌道內運行。", c: "text-emerald-400" };
       }
     },
     { 
-      key: 'macd', title: 'MACD 動能', val: analysis ? analysis.last.macd.toFixed(2) : '--', 
-      desc: '趨勢權重 7%。柱狀體 (OSC) 代表動能。捕捉轉折點。', 
-      info: `權重：7%\n\n【買入評分 (Max 7)】\n● 紅柱收斂 (轉強): +3\n● 零軸金叉 (確認): +2\n● 底背離 (破底翻): +2\n\n【賣出評分 (Max 7)】\n● 綠柱收斂 (轉弱): +3\n● 零軸死叉 (確認): +2\n● 頂背離 (拉高出貨): +2`,
+      key: 'macd', 
+      title: 'MACD 動能', 
+      val: analysis ? analysis.last.macd.toFixed(2) : '--', 
+      desc: is3231
+        ? `輔助權重 ${analysis?.macdMaxScore || 5}%。動能止跌確認。紅柱收斂即給分，不等待交叉。短線快進快出。`
+        : `趨勢權重 ${analysis?.macdMaxScore || 7}%。柱狀體 (OSC) 代表動能。捕捉轉折點。`, 
+      info: is3231
+        ? `權重：${analysis?.macdMaxScore || 5}% (短線波段版，輔助濾網)\n\n【買入評分 - 止跌確認】\n● 黃金交叉 (OSC 負轉正)：5分 (滿分，動能翻多)\n● 紅柱收斂 (OSC < 0 且收斂)：3分 (止跌訊號，重點)\n● 紅柱擴大：0分 (殺盤持續)\n\n【賣出評分 - 上攻無力】\n● 死亡交叉 (OSC 正轉負)：5分 (滿分，動能翻空)\n● 綠柱收斂 (OSC > 0 且收斂)：3分 (上攻無力，獲利了結預警)\n● 綠柱擴大：0分 (主升段，續抱)\n\n(不求全拿，只要 3 分配合其他指標即可)`
+        : `權重：${analysis?.macdMaxScore || 7}%\n\n【買入評分 (Max 7)】\n● 紅柱收斂 (轉強): +3\n● 零軸金叉 (確認): +2\n● 底背離 (破底翻): +2\n\n【賣出評分 (Max 7)】\n● 綠柱收斂 (轉弱): +3\n● 零軸死叉 (確認): +2\n● 頂背離 (拉高出貨): +2`,
       diag: (o) => {
         if (o === undefined) return { t: "分析中...", c: "text-neutral-500" };
         return o > 0 ? { t: "【多方動能】柱狀體為正。", c: "text-emerald-400" } : { t: "【空方動能】柱狀體為負。", c: "text-rose-400" };
       }
     },
     { 
-      key: 'dmi', title: 'DMI 趨勢強度', val: analysis ? Math.round(analysis.last.adx) : '--', 
-      desc: '趨勢權重 6%。ADX 數值代表趨勢強度。數值越高代表趨勢越明確。', 
-      info: `權重：6%\n\n【買入評分】\n● 方向：+DI > -DI (+2), 金叉 (+1)\n● 強度：ADX > 25 且向上 (+3)\n● 過熱扣分：ADX > 50 (-1)\n\n【賣出評分】\n● 方向：-DI > +DI (+2), 死叉 (+1)\n● 強度：ADX > 25 且向上 (+3)`,
+      key: 'dmi', 
+      title: 'DMI 趨勢強度', 
+      val: analysis ? Math.round(analysis.last.adx) : '--', 
+      desc: is3231
+        ? '不列入評分。短線操作不依賴趨勢強度指標，專注轉折訊號。'
+        : '趨勢權重 6%。ADX 數值代表趨勢強度。數值越高代表趨勢越明確。', 
+      info: is3231
+        ? `不列入評分 (3231 短線波段版)\n\n3231 策略專注短線轉折指標（RSI、KD、BB），\n不依賴趨勢強度判斷，因此 DMI 不列入評分。\n\n(僅供參考，不影響總分計算)`
+        : `權重：6%\n\n【買入評分】\n● 方向：+DI > -DI (+2), 金叉 (+1)\n● 強度：ADX > 25 且向上 (+3)\n● 過熱扣分：ADX > 50 (-1)\n\n【賣出評分】\n● 方向：-DI > +DI (+2), 死叉 (+1)\n● 強度：ADX > 25 且向上 (+3)`,
       diag: (a) => a > 25 ? { t: "【趨勢盤】動能強勁。", c: "text-rose-400" } : { t: "【盤整盤】方向不明。", c: "text-blue-400" }
     },
     { 
       key: 'fibo', 
       title: 'Fibo 波段位階', 
       val: '關鍵位階', 
-      getVal: (analysis, themeColors) => (
-        <div className="flex flex-col gap-1 mt-1">
-          <div className="flex justify-between items-center text-xs">
-            <span style={{color: themeColors.target}}>1.618</span>
-            <span className="font-mono">${analysis ? Math.round(analysis.fibo.ext1618) : '--'}</span>
-          </div>
-          <div className="flex justify-between items-center text-xs">
-            <span style={{color: themeColors.ext1272}}>1.272</span>
-            <span className="font-mono">${analysis ? Math.round(analysis.fibo.ext1272) : '--'}</span>
-          </div>
-          <div className="flex justify-between items-center text-xs">
-            <span style={{color: themeColors.l618}}>0.618</span>
-            <span className="font-mono">${analysis ? Math.round(analysis.fibo.l618) : '--'}</span>
-          </div>
-          <div className="flex justify-between items-center text-xs">
-            <span style={{color: themeColors.l382}}>0.382</span>
-            <span className="font-mono">${analysis ? Math.round(analysis.fibo.l382) : '--'}</span>
-          </div>
-          <div className="flex justify-between items-center text-xs">
-            <span style={{color: themeColors.l236}}>0.236</span>
-            <span className="font-mono">${analysis ? Math.round(analysis.fibo.l236) : '--'}</span>
-          </div>
-        </div>
-      ),
-      desc: '最高權重 35%。依據最近趨勢腿 (Impulse Leg) 計算。0.382 為最佳回檔買點。', 
-      info: `權重：35% (最高)\n\n【買入評分 - 線性給分】\n● > 0.236：5-10分 (線性分配)\n● 0.236-0.382：20-25分 (線性，0.382最高25分)\n● 0.382-0.5：15-20分 (線性分配)\n● 0.5-0.618：10-15分 (線性分配)\n● < 0.618 (破線)：0分\n\n【賣出評分】\n● 1.618：獲利滿足 35分\n● 1.272：壓力 28分\n● 破0.618：停損 35分`,
+      getVal: (analysis, themeColors) => {
+        if (is3231) {
+          // 3231 只顯示簡化位階
+          return (
+            <div className="flex flex-col gap-1 mt-1">
+              <div className="flex justify-between items-center text-xs">
+                <span style={{color: themeColors.ext1272}}>1.272</span>
+                <span className="font-mono">${analysis && analysis.fibo.ext1272 ? Math.round(analysis.fibo.ext1272) : '--'}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span style={{color: themeColors.l500}}>0.500</span>
+                <span className="font-mono">${analysis && analysis.fibo.l500 ? Math.round(analysis.fibo.l500) : '--'}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span style={{color: themeColors.l786}}>0.786</span>
+                <span className="font-mono">${analysis && analysis.fibo.l786 ? Math.round(analysis.fibo.l786) : '--'}</span>
+              </div>
+            </div>
+          );
+        } else {
+          // 6669 顯示完整位階
+          return (
+            <div className="flex flex-col gap-1 mt-1">
+              <div className="flex justify-between items-center text-xs">
+                <span style={{color: themeColors.target}}>1.618</span>
+                <span className="font-mono">${analysis && analysis.fibo.ext1618 ? Math.round(analysis.fibo.ext1618) : '--'}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span style={{color: themeColors.ext1272}}>1.272</span>
+                <span className="font-mono">${analysis && analysis.fibo.ext1272 ? Math.round(analysis.fibo.ext1272) : '--'}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span style={{color: themeColors.l618}}>0.618</span>
+                <span className="font-mono">${analysis && analysis.fibo.l618 ? Math.round(analysis.fibo.l618) : '--'}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span style={{color: themeColors.l382}}>0.382</span>
+                <span className="font-mono">${analysis && analysis.fibo.l382 ? Math.round(analysis.fibo.l382) : '--'}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span style={{color: themeColors.l236}}>0.236</span>
+                <span className="font-mono">${analysis && analysis.fibo.l236 ? Math.round(analysis.fibo.l236) : '--'}</span>
+              </div>
+            </div>
+          );
+        }
+      },
+      desc: is3231 
+        ? `短線權重 ${fiboWeight}%。20日箱型策略。價格位於箱型下半部即給分，極簡化階梯式評分。`
+        : `最高權重 ${fiboWeight}%。依據最近趨勢腿 (Impulse Leg) 計算。0.382 為最佳回檔買點。`, 
+      info: is3231
+        ? `權重：${fiboWeight}% (短線波段版，20日箱型)\n\n【買入評分 - 階梯式】\n● 價格 > l500：0分 (上半部壓力區)\n● l786 < 價格 <= l500：3分 (下半部安全區)\n● 價格 <= l786：5分 (底部超跌區)\n\n【賣出評分 - 階梯式】\n● 最高價 >= ext1272：5分 (短線噴出)\n● 最高價 >= maxPrice：3分 (創新高)\n● 價格 < maxPrice：0分 (未突破)`
+        : `權重：${fiboWeight}% (最高)\n\n【買入評分 - 線性給分】\n● > 0.236：5-10分 (線性分配)\n● 0.236-0.382：20-25分 (線性，0.382最高25分)\n● 0.382-0.5：15-20分 (線性分配)\n● 0.5-0.618：10-15分 (線性分配)\n● < 0.618 (破線)：0分\n\n【賣出評分】\n● 1.618：獲利滿足 35分\n● 1.272：壓力 28分\n● 破0.618：停損 35分`,
       diag: () => ({ t: "【關鍵決策】權重最高參考指標。", c: "text-blue-400" })
     }
   ];
+  }, [analysis, stockSymbol]);
 
   return (
     <>
@@ -1136,19 +1530,55 @@ const App = () => {
                 <div className="text-xs text-emerald-400 font-black uppercase">佈局權重分析</div>
                 <button 
                   className="p-1 text-neutral-600 hover:text-white" 
-                  onClick={(e) => showInfo(e, 'buy', '買入評分模型', 
-                    `【評分標準】\n總分 100 由以下加權計算：\n\n1. FIBO 位階 (35%)：\n   0.382為最高分，各區間內線性分配。\n\n2. 歷史起伏 (20%)：\n   斜率位階低檔 (超跌)，線性給分。\n\n3. 趨勢綜合 (20%)：\n   MA/MACD/DMI 多頭排列。\n\n4. 震盪指標 (20%)：\n   RSI/KD 低檔背離給分。\n\n5. 波動風險 (5%)：\n   觸及布林下軌。\n\n【各階段評語】\n● >50分：強力買進\n   多項指標同步看多，適合積極進場。\n\n● 40~50分：分批佈局\n   趨勢轉強但仍有風險，建議分批買入。\n\n● 20~40分：中性觀察\n   市場方向不明，建議等待更明確訊號。\n\n● <20分：觀望\n   多項指標偏弱，不建議進場。\n\n【霸王條款】\n● 逆勢 (停止買入)：\n   即使分數 >20，但季線斜率 <0 時，\n   表示趨勢向下，應停止買入。`
-                  )}
+                  onClick={(e) => {
+                    const bbWeight = analysis?.bbMaxScore || 5;
+                    const otherWeight = 100 - 35 - 20 - 20 - bbWeight;
+                    const infoText = stockSymbol === '3231' 
+                      ? `【評分標準】\n總分 100 由以下加權計算：\n\n1. 布林通道 (30%)：\n   短線波段策略，線性給分。\n   %B < 0：30分 (超跌滿分)\n   0 <= %B < 0.1：30→25分 (線性)\n   0.1 <= %B < 0.3：25→10分 (線性)\n\n2. KD 隨機指標 (25%)：\n   短線轉折指標。\n   K<20 極度超賣滿分，K>80 直接賣出。\n   無鈍化保護，有賺就跑。\n\n3. RSI 相對強弱 (25%)：\n   短線震盪指標。\n   RSI<30 極度超賣滿分，RSI>75 直接賣出。\n   背離直接滿分。\n\n4. MA 乖離 (10%)：\n   MA20月線：負乖離過大搶反彈，正乖離過大獲利了結。\n\n5. FIBO 位階 (5%)：\n   短線波段版，20日箱型。\n   價格 > l500：0分\n   l786 < 價格 <= l500：3分\n   價格 <= l786：5分\n\n6. MACD 動能 (5%)：\n   動能止跌確認。紅柱收斂即給分，不等待交叉。\n\n(註：斜率與 DMI 不列入評分，專注短線轉折)\n\n【買入分數門檻】\n● >60分：強力買進 (Strong Buy)\n   投入 50% 資金。黃金買點。\n   通常代表「跌破布林下軌 + KD < 20 + RSI 極低」。\n   這是送分題，勝率極高。\n\n● >45分：嘗試進場 (Try Buy)\n   投入 20% 資金。普通買點。\n   對應回測月線或稍微碰到布林下軌。\n   適合先買一張試水溫，若跌更深再加碼。\n\n● <20分：觀望\n   0% 資金。股價在高檔噴出中，千萬別追高。\n\n【霸王條款】\n● 逆勢 (停止買入)：\n   即使分數 >20，但月線斜率 <0 時，\n   表示趨勢向下，應停止買入。`
+                      : `【評分標準】\n總分 100 由以下加權計算：\n\n1. FIBO 位階 (35%)：\n   0.382為最高分，各區間內線性分配。\n\n2. 歷史起伏 (20%)：\n   斜率位階低檔 (超跌)，線性給分。\n\n3. 趨勢綜合 (20%)：\n   MA/MACD/DMI 多頭排列。\n\n4. 震盪指標 (20%)：\n   RSI/KD 低檔背離給分。\n\n5. 波動風險 (5%)：\n   觸及布林下軌。\n\n【各階段評語】\n● >50分：強力買進\n   多項指標同步看多，適合積極進場。\n\n● 40~50分：分批佈局\n   趨勢轉強但仍有風險，建議分批買入。\n\n● 20~40分：中性觀察\n   市場方向不明，建議等待更明確訊號。\n\n● <20分：觀望\n   多項指標偏弱，不建議進場。\n\n【霸王條款】\n● 逆勢 (停止買入)：\n   即使分數 >20，但季線斜率 <0 時，\n   表示趨勢向下，應停止買入。`;
+                    showInfo(e, 'buy', '買入評分模型', infoText);
+                  }}
                 >
                   <Info size={14}/>
                 </button>
               </div>
               <div className="space-y-3">
-                {renderScoreBar('FIBO 位階 (35%)', analysis?.scores.fibo.buy || 0, 35, 'bg-emerald-500')}
-                {renderScoreBar('歷史起伏 (20%)', analysis?.scores.slope.buy || 0, 20, 'bg-emerald-500')}
-                {renderScoreBar('趨勢綜合 (20%)', analysis?.scores.ma.buy + analysis?.scores.macd.buy + analysis?.scores.dmi.buy || 0, 20, 'bg-emerald-500')}
-                {renderScoreBar('震盪指標 (20%)', analysis?.scores.rsi.buy + analysis?.scores.kd.buy || 0, 20, 'bg-emerald-500')}
-                {renderScoreBar('波動風險 (5%)', analysis?.scores.bb.buy || 0, 5, 'bg-emerald-500')}
+                {renderScoreBar(
+                  `FIBO 位階 (${analysis?.fiboMaxScore || 35}%)`, 
+                  analysis?.scores.fibo.buy || 0, 
+                  analysis?.fiboMaxScore || 35, 
+                  'bg-emerald-500'
+                )}
+                {renderScoreBar(
+                  is3231 ? '歷史起伏 (不列入評分)' : '歷史起伏 (20%)', 
+                  analysis?.scores.slope.buy || 0, 
+                  is3231 ? 0 : 20, 
+                  'bg-emerald-500'
+                )}
+                {renderScoreBar(
+                  is3231 
+                    ? `趨勢綜合 (${(analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5)}%)` 
+                    : `趨勢綜合 (${(analysis?.maMaxScore || 7) + (analysis?.macdMaxScore || 7) + 6}%)`, 
+                  is3231
+                    ? (analysis?.scores.ma.buy + analysis?.scores.macd.buy || 0)
+                    : (analysis?.scores.ma.buy + analysis?.scores.macd.buy + analysis?.scores.dmi.buy || 0), 
+                  is3231
+                    ? ((analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5))
+                    : ((analysis?.maMaxScore || 7) + (analysis?.macdMaxScore || 7) + 6), 
+                  'bg-emerald-500'
+                )}
+                {renderScoreBar(
+                  `震盪指標 (${(analysis?.rsiMaxScore || (is3231 ? 25 : 10)) + (analysis?.kdMaxScore || (is3231 ? 25 : 10))}%)`, 
+                  analysis?.scores.osc.buy || 0, 
+                  (analysis?.rsiMaxScore || (is3231 ? 25 : 10)) + (analysis?.kdMaxScore || (is3231 ? 25 : 10)), 
+                  'bg-emerald-500'
+                )}
+                {renderScoreBar(
+                  `波動風險 (${analysis?.bbMaxScore || (is3231 ? 30 : 5)}%)`, 
+                  analysis?.scores.bb.buy || 0, 
+                  analysis?.bbMaxScore || (is3231 ? 30 : 5), 
+                  'bg-emerald-500'
+                )}
               </div>
             </div>
           </div>
@@ -1166,19 +1596,54 @@ const App = () => {
                 <div className="text-xs text-rose-400 font-black uppercase">風險權重分析</div>
                 <button 
                   className="p-1 text-neutral-600 hover:text-white"
-                  onClick={(e) => showInfo(e, 'sell', '賣出評分模型', 
-                    `【評分標準】\n總分 100 由以下加權計算：\n\n1. FIBO 壓力 (35%)：\n   接近 1.618 擴展位滿分。\n\n2. 歷史噴發 (20%)：\n   斜率位階 > 90% (過熱)，線性給分。\n\n3. 趨勢乖離 (20%)：\n   乖離過大或指標轉弱。\n\n4. 震盪過熱 (20%)：\n   RSI/KD 高檔鈍化。\n\n5. 波動極端 (5%)：\n   觸及布林上軌。\n\n【各階段評語】\n● >55分：清倉賣出\n   多項指標同步看空，建議全部出清。\n\n● 40~55分：調節警戒\n   風險上升但仍有上漲空間，建議減碼。\n\n● ≤40分：續抱\n   風險可控，可繼續持有。\n\n【霸王條款】\n● 破線 (強制停損)：\n   價格跌破 FIBO 0.618 位階時，\n   無論分數多少，都應立即停損。`
-                  )}
+                  onClick={(e) => {
+                    const bbWeight = analysis?.bbMaxScore || 5;
+                    const infoText = stockSymbol === '3231'
+                      ? `【評分標準】\n總分 100 由以下加權計算：\n\n1. 布林通道 (30%)：\n   短線波段策略，線性給分。\n   %B > 1.0：30分 (突破上軌滿分)\n   0.9 < %B <= 1.0：25→30分 (線性)\n   假突破：20分\n   (移除爆量保護，有賺就跑)\n\n2. KD 隨機指標 (25%)：\n   短線轉折指標。\n   K>80 直接滿分賣出，70 < K <= 80 分批調節。\n   無鈍化保護，有賺就跑。\n\n3. RSI 相對強弱 (25%)：\n   短線震盪指標。\n   RSI>75 直接滿分賣出，60 < RSI <= 75 分批調節。\n   頂背離直接滿分。\n\n4. MA 乖離 (10%)：\n   MA20月線：正乖離過大獲利了結，跌破月線停利/停損。\n\n5. FIBO 壓力 (5%)：\n   短線波段版，20日箱型。\n   最高價 >= ext1272：5分\n   最高價 >= maxPrice：3分\n   價格 < maxPrice：0分\n\n6. MACD 動能 (5%)：\n   動能上攻無力，綠柱收斂即給分。\n\n(註：斜率與 DMI 不列入評分，專注短線轉折)\n\n【賣出分數門檻】\n● >60分：清倉賣出 (Clear Out)\n   100% 全跑。過熱警報。\n   代表「突破布林上軌 + KD/RSI 鈍化」。\n   短線肉已被吃光，隨時會回檔，不要留戀。\n\n● >40分：獲利調節 (Trim)\n   賣出 50% 持股。止盈點。\n   只要有賺且分數超過 40 分（代表碰到上軌壓力），\n   先收一半現金進口袋，剩下的一半設移動停利。\n\n● ≤40分：續抱\n   不動。股價還在從底部往上爬的過程中，\n   還沒碰到天花板。`
+                      : `【評分標準】\n總分 100 由以下加權計算：\n\n1. FIBO 壓力 (35%)：\n   接近 1.618 擴展位滿分。\n\n2. 歷史噴發 (20%)：\n   斜率位階 > 90% (過熱)，線性給分。\n\n3. 趨勢乖離 (20%)：\n   乖離過大或指標轉弱。\n\n4. 震盪過熱 (20%)：\n   RSI/KD 高檔鈍化。\n\n5. 波動極端 (5%)：\n   觸及布林上軌。\n\n【各階段評語】\n● >55分：清倉賣出\n   多項指標同步看空，建議全部出清。\n\n● 40~55分：調節警戒\n   風險上升但仍有上漲空間，建議減碼。\n\n● ≤40分：續抱\n   風險可控，可繼續持有。\n\n【霸王條款】\n● 破線 (強制停損)：\n   價格跌破 FIBO 0.618 位階時，\n   無論分數多少，都應立即停損。`;
+                    showInfo(e, 'sell', '賣出評分模型', infoText);
+                  }}
                 >
                   <Info size={14}/>
                 </button>
               </div>
               <div className="space-y-3">
-                {renderScoreBar('FIBO 壓力 (35%)', analysis?.scores.fibo.sell || 0, 35, 'bg-rose-500')}
-                {renderScoreBar('歷史噴發 (20%)', analysis?.scores.slope.sell || 0, 20, 'bg-rose-500')}
-                {renderScoreBar('趨勢乖離 (20%)', analysis?.scores.ma.sell + analysis?.scores.macd.sell + analysis?.scores.dmi.sell || 0, 20, 'bg-rose-500')}
-                {renderScoreBar('震盪過熱 (20%)', analysis?.scores.osc.sell || 0, 20, 'bg-rose-500')}
-                {renderScoreBar('波動極端 (5%)', analysis?.scores.bb.sell || 0, 5, 'bg-rose-500')}
+                {renderScoreBar(
+                  `FIBO 壓力 (${analysis?.fiboMaxScore || 35}%)`, 
+                  analysis?.scores.fibo.sell || 0, 
+                  analysis?.fiboMaxScore || 35, 
+                  'bg-rose-500'
+                )}
+                {renderScoreBar(
+                  is3231 ? '歷史噴發 (不列入評分)' : '歷史噴發 (20%)', 
+                  analysis?.scores.slope.sell || 0, 
+                  is3231 ? 0 : 20, 
+                  'bg-rose-500'
+                )}
+                {renderScoreBar(
+                  is3231 
+                    ? `趨勢乖離 (${(analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5)}%)` 
+                    : `趨勢乖離 (${(analysis?.maMaxScore || 7) + (analysis?.macdMaxScore || 7) + 6}%)`, 
+                  is3231
+                    ? (analysis?.scores.ma.sell + analysis?.scores.macd.sell || 0)
+                    : (analysis?.scores.ma.sell + analysis?.scores.macd.sell + analysis?.scores.dmi.sell || 0), 
+                  is3231
+                    ? ((analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5))
+                    : ((analysis?.maMaxScore || 7) + (analysis?.macdMaxScore || 7) + 6), 
+                  'bg-rose-500'
+                )}
+                {renderScoreBar(
+                  `震盪過熱 (${(analysis?.rsiMaxScore || (is3231 ? 25 : 10)) + (analysis?.kdMaxScore || (is3231 ? 25 : 10))}%)`, 
+                  analysis?.scores.osc.sell || 0, 
+                  (analysis?.rsiMaxScore || (is3231 ? 25 : 10)) + (analysis?.kdMaxScore || (is3231 ? 25 : 10)), 
+                  'bg-rose-500'
+                )}
+                {renderScoreBar(
+                  `波動極端 (${analysis?.bbMaxScore || (is3231 ? 30 : 5)}%)`, 
+                  analysis?.scores.bb.sell || 0, 
+                  analysis?.bbMaxScore || (is3231 ? 30 : 5), 
+                  'bg-rose-500'
+                )}
               </div>
             </div>
           </div>
@@ -1241,7 +1706,7 @@ const App = () => {
                     <Area yAxisId="right" dataKey="price" stroke="transparent" fill="url(#pGrad)" isAnimationActive={false} />
                     <Line yAxisId="right" type="linear" dataKey="price" stroke={themeColors.price} strokeWidth={3} dot={false} isAnimationActive={false} />
                     
-                    {visibleLayers.ma && <Line yAxisId="right" type="linear" dataKey="ma60" stroke={themeColors.ma} strokeWidth={2} dot={false} strokeDasharray="5 5" isAnimationActive={false} />}
+                    {visibleLayers.ma && <Line yAxisId="right" type="linear" dataKey={is3231 ? "ma20" : "ma60"} stroke={themeColors.ma} strokeWidth={2} dot={false} strokeDasharray="5 5" isAnimationActive={false} />}
                     {visibleLayers.bb && (
                       <>
                         <Line yAxisId="right" type="linear" dataKey="upper" stroke={themeColors.bb} strokeWidth={1} dot={false} strokeDasharray="3 3" opacity={0.6} isAnimationActive={false} />
@@ -1250,13 +1715,25 @@ const App = () => {
                     )}
                     {visibleLayers.fibo && analysis && (
                       <>
-                        <ReferenceLine yAxisId="right" y={analysis.fibo.ext1618} stroke={themeColors.target} strokeWidth={2} strokeDasharray="3 3" label={{ value: '1.618', fill: '#fff', fontSize: 11, fontWeight: 'bold', position: 'insideTopRight' }} />
-                        <ReferenceLine yAxisId="right" y={analysis.fibo.ext1272} stroke={themeColors.ext1272} strokeWidth={2} strokeDasharray="3 3" label={{ value: '1.272', fill: '#fff', fontSize: 11, fontWeight: 'bold', position: 'insideTopRight' }} />
-                        <ReferenceLine yAxisId="right" y={analysis.fibo.l786} stroke={themeColors.l786} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.786', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />
-                        <ReferenceLine yAxisId="right" y={analysis.fibo.l618} stroke={themeColors.l618} strokeWidth={2.5} label={{ value: '0.618', fill: '#fff', fontSize: 11, fontWeight: 'bold', position: 'insideTopRight' }} />
-                        <ReferenceLine yAxisId="right" y={analysis.fibo.l500} stroke={themeColors.l500} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.500', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />
-                        <ReferenceLine yAxisId="right" y={analysis.fibo.l382} stroke={themeColors.l382} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.382', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />
-                        <ReferenceLine yAxisId="right" y={analysis.fibo.l236} stroke={themeColors.l236} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.236', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />
+                        {stockSymbol === '3231' ? (
+                          // 3231 只顯示簡化位階
+                          <>
+                            {analysis.fibo.ext1272 && <ReferenceLine yAxisId="right" y={analysis.fibo.ext1272} stroke={themeColors.ext1272} strokeWidth={2} strokeDasharray="3 3" label={{ value: '1.272', fill: '#fff', fontSize: 11, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                            {analysis.fibo.l500 && <ReferenceLine yAxisId="right" y={analysis.fibo.l500} stroke={themeColors.l500} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.500', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                            {analysis.fibo.l786 && <ReferenceLine yAxisId="right" y={analysis.fibo.l786} stroke={themeColors.l786} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.786', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                          </>
+                        ) : (
+                          // 6669 顯示完整位階
+                          <>
+                            {analysis.fibo.ext1618 && <ReferenceLine yAxisId="right" y={analysis.fibo.ext1618} stroke={themeColors.target} strokeWidth={2} strokeDasharray="3 3" label={{ value: '1.618', fill: '#fff', fontSize: 11, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                            {analysis.fibo.ext1272 && <ReferenceLine yAxisId="right" y={analysis.fibo.ext1272} stroke={themeColors.ext1272} strokeWidth={2} strokeDasharray="3 3" label={{ value: '1.272', fill: '#fff', fontSize: 11, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                            {analysis.fibo.l786 && <ReferenceLine yAxisId="right" y={analysis.fibo.l786} stroke={themeColors.l786} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.786', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                            {analysis.fibo.l618 && <ReferenceLine yAxisId="right" y={analysis.fibo.l618} stroke={themeColors.l618} strokeWidth={2.5} label={{ value: '0.618', fill: '#fff', fontSize: 11, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                            {analysis.fibo.l500 && <ReferenceLine yAxisId="right" y={analysis.fibo.l500} stroke={themeColors.l500} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.500', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                            {analysis.fibo.l382 && <ReferenceLine yAxisId="right" y={analysis.fibo.l382} stroke={themeColors.l382} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.382', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                            {analysis.fibo.l236 && <ReferenceLine yAxisId="right" y={analysis.fibo.l236} stroke={themeColors.l236} strokeWidth={1.5} strokeDasharray="3 3" label={{ value: '0.236', fill: '#fff', fontSize: 10, fontWeight: 'bold', position: 'insideTopRight' }} />}
+                          </>
+                        )}
                       </>
                     )}
                     
@@ -1379,8 +1856,8 @@ const App = () => {
                   </p>
                   <div className="flex gap-2 sm:gap-4 mt-2 text-[10px] sm:text-xs font-mono opacity-80">
                     {/* 修正：顯示 實得/滿分 格式，並移除 + 號 */}
-                    <span className="text-emerald-400">買: {Math.round(scoreObj.buy)}/{card.key === 'fibo' ? 35 : (card.key === 'slope' ? 20 : (card.key === 'ma' || card.key === 'macd' ? 7 : (card.key === 'dmi' ? 6 : (card.key === 'rsi' || card.key === 'kd' ? 10 : 5))))}</span>
-                    <span className="text-rose-400">賣: {Math.round(scoreObj.sell)}/{card.key === 'fibo' ? 35 : (card.key === 'slope' ? 20 : (card.key === 'ma' || card.key === 'macd' ? 7 : (card.key === 'dmi' ? 6 : (card.key === 'rsi' || card.key === 'kd' ? 10 : 5))))}</span>
+                    <span className="text-emerald-400">買: {Math.round(scoreObj.buy)}/{card.key === 'fibo' ? (analysis?.fiboMaxScore || 35) : card.key === 'slope' ? 20 : card.key === 'ma' || card.key === 'macd' ? 7 : card.key === 'dmi' ? 6 : card.key === 'rsi' ? (analysis?.rsiMaxScore || 10) : card.key === 'kd' ? (analysis?.kdMaxScore || 10) : card.key === 'bb' ? (analysis?.bbMaxScore || 5) : 5}</span>
+                    <span className="text-rose-400">賣: {Math.round(scoreObj.sell)}/{card.key === 'fibo' ? (analysis?.fiboMaxScore || 35) : card.key === 'slope' ? 20 : card.key === 'ma' ? (analysis?.maMaxScore || 7) : card.key === 'macd' ? (analysis?.macdMaxScore || 7) : card.key === 'dmi' ? 6 : card.key === 'rsi' ? (analysis?.rsiMaxScore || 10) : card.key === 'kd' ? (analysis?.kdMaxScore || 10) : card.key === 'bb' ? (analysis?.bbMaxScore || 5) : 5}</span>
                   </div>
                 </div>
               </div>
