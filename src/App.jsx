@@ -1064,6 +1064,356 @@ const App = () => {
       sellSignal = { text: '破線 (強制停損)', color: 'text-red-600 font-black animate-pulse' };
     }
     
+    // 計算前5天的買入和賣出分數（簡化版，只計算總分）
+    const historicalScores = [];
+    for (let i = 1; i <= 5; i++) {
+      if (data.length < 120 + i) break; // 確保有足夠的歷史數據
+      const histIndex = data.length - 1 - i;
+      const histLast = data[histIndex];
+      const histPrev = data[histIndex - 1];
+      
+      if (!histLast || !histPrev) break;
+      
+      // 計算歷史當天的實際分數（使用歷史當天的實際數據）
+      const histP = histLast.price;
+      
+      // 重新計算歷史當天的 FIBO（基於歷史當天往前推的窗口期）
+      let histMaxPrice = -Infinity, histMaxIndex = -1;
+      let histMinPrice = Infinity;
+      let histRecentData, histRange, histSwingRate, histFiboValid, histFibo;
+      
+      if (is3231) {
+        // 3231：基於歷史當天往前推 20 天
+        histRecentData = data.slice(Math.max(0, histIndex - 19), histIndex + 1);
+        
+        histRecentData.forEach((d, idx) => { 
+          if (d.price > histMaxPrice) { histMaxPrice = d.price; histMaxIndex = idx; }
+          if (d.price < histMinPrice) { histMinPrice = d.price; }
+        });
+        
+        histRange = histMaxPrice - histMinPrice;
+        histSwingRate = histMinPrice > 0 ? (histMaxPrice - histMinPrice) / histMinPrice : 0;
+        histFiboValid = histSwingRate >= 0.05;
+        
+        histFibo = { 
+          l500: histMaxPrice - histRange * 0.5,
+          l786: histMaxPrice - histRange * 0.786,
+          ext1272: histMaxPrice + histRange * 0.272,
+          l236: null, l382: null, l618: null, ext1618: null
+        };
+      } else {
+        // 6669：基於歷史當天往前推 120 天
+        histRecentData = data.slice(Math.max(0, histIndex - 119), histIndex + 1);
+        
+        histRecentData.forEach((d, idx) => { 
+          if (d.price > histMaxPrice) { histMaxPrice = d.price; histMaxIndex = idx; } 
+        });
+        
+        const histLegData = histRecentData.slice(0, histMaxIndex + 1);
+        histLegData.forEach(d => { if (d.price < histMinPrice) histMinPrice = d.price; });
+        
+        if (histMaxIndex < 5 && data.length > histIndex + 80) {
+          const histExtendData = data.slice(Math.max(0, histIndex - 199), histIndex + 1);
+          histMinPrice = Math.min(...histExtendData.map(d=>d.price));
+        }
+        
+        histRange = histMaxPrice - histMinPrice;
+        histSwingRate = histMinPrice > 0 ? (histMaxPrice - histMinPrice) / histMinPrice : 0;
+        histFiboValid = histSwingRate >= 0.1;
+        
+        histFibo = { 
+          l236: histMaxPrice - histRange * 0.236, 
+          l382: histMaxPrice - histRange * 0.382, 
+          l500: histMaxPrice - histRange * 0.5,
+          l618: histMaxPrice - histRange * 0.618, 
+          l786: histMaxPrice - histRange * 0.786,
+          ext1272: histMaxPrice + histRange * 0.272, 
+          ext1618: histMaxPrice + histRange * 0.618 
+        };
+      }
+      
+      // 使用重新計算的 FIBO 來評分
+      let histB_Fibo = 0, histS_Fibo = 0;
+      if (histFiboValid) {
+        if (is3231) {
+          if (histP > histFibo.l500) histB_Fibo = 0;
+          else if (histP > histFibo.l786) histB_Fibo = 3;
+          else histB_Fibo = 5;
+          
+          if (histLast.high >= histFibo.ext1272) histS_Fibo = 5;
+          else if (histLast.high >= histMaxPrice) histS_Fibo = 3;
+          else histS_Fibo = 0;
+        } else {
+          // 6669 簡化計算
+          if (histP > histFibo.l236) histB_Fibo = map(histP, histFibo.l236, histMaxPrice, 5, 10);
+          else if (histP > histFibo.l382) histB_Fibo = map(histP, histFibo.l382, histFibo.l236, 20, 25);
+          else if (histP > histFibo.l500) histB_Fibo = map(histP, histFibo.l500, histFibo.l382, 15, 20);
+          else if (histP >= histFibo.l618) histB_Fibo = map(histP, histFibo.l618, histFibo.l500, 10, 15);
+          else histB_Fibo = 0;
+          histB_Fibo = Math.min(35, Math.max(0, histB_Fibo));
+          
+          if (histLast.high >= histFibo.ext1618) histS_Fibo = 35;
+          else if (histLast.high >= histFibo.ext1272) histS_Fibo = 28;
+          else if (histP > histMaxPrice) histS_Fibo = 15;
+          if (histP < histFibo.l618) histS_Fibo = 35;
+        }
+      }
+      
+      // 簡化的斜率評分
+      const histValidSlopes = data.filter((d, idx) => idx >= 60 && idx <= histIndex).map(d => d.slopeVal);
+      const histSPerc = histValidSlopes.length > 0 
+        ? (histValidSlopes.sort((a, b) => a - b).filter(s => s < histLast.slopeVal).length / histValidSlopes.length) * 100
+        : 50;
+      
+      let histB_Hist = 0, histS_Hist = 0;
+      if (!is3231) {
+        let histB_Slope_Rank = 0;
+        if (histSPerc < 10) histB_Slope_Rank = map(histSPerc, 0, 10, 15, 10);
+        else if (histSPerc < 25) histB_Slope_Rank = map(histSPerc, 10, 25, 10, 5);
+        else if (histSPerc < 40) histB_Slope_Rank = map(histSPerc, 25, 40, 5, 0);
+        const histB_Slope_Mom = (histLast.slopeVal > histPrev.slopeVal) ? 5 : 0;
+        histB_Hist = (histB_Slope_Rank > 0) ? histB_Slope_Rank + histB_Slope_Mom : 0;
+        
+        let histS_Slope_Rank = 0;
+        if (histSPerc > 90) histS_Slope_Rank = map(histSPerc, 90, 100, 10, 15);
+        else if (histSPerc > 75) histS_Slope_Rank = map(histSPerc, 75, 90, 5, 10);
+        else if (histSPerc > 60) histS_Slope_Rank = map(histSPerc, 60, 75, 0, 5);
+        const histS_Slope_Mom = (histLast.slopeVal < histPrev.slopeVal) ? 5 : 0;
+        histS_Hist = (histS_Slope_Rank > 0) ? histS_Slope_Rank + histS_Slope_Mom : 0;
+      }
+      
+      // 簡化的 MA 評分
+      let histB_MA = 0, histS_MA = 0;
+      if (is3231) {
+        const histMaValue = histLast.ma20;
+        const histBias = histMaValue ? (histP - histMaValue) / histMaValue * 100 : 0;
+        if (histBias < -6) histB_MA = 10;
+        else if (histBias < -3) histB_MA = 6;
+        else if (histBias <= 0) histB_MA = 3;
+        
+        if (histBias > 8) histS_MA = 10;
+        else if (histBias > 4) histS_MA = 6;
+        if (histP < histMaValue) histS_MA = Math.max(histS_MA, 3);
+        histB_MA = Math.min(10, histB_MA);
+        histS_MA = Math.min(10, histS_MA);
+      } else {
+        const histBias = histLast.ma60 ? (histP - histLast.ma60) / histLast.ma60 * 100 : 0;
+        const histMaSlope = histPrev.ma60 && histPrev.ma60 !== 0 ? (histLast.ma60 - histPrev.ma60) / histPrev.ma60 : 0;
+        const histLast3Days = data.slice(Math.max(0, histIndex - 2), histIndex + 1);
+        const histIsBroken = histLast3Days.length === 3 && histLast3Days.every(d => d.price < d.ma60);
+        
+        if (!histIsBroken) {
+          if (histMaSlope > 0) histB_MA += 3;
+          if (histBias > 0 && histBias <= 5) histB_MA += 4;
+          else if (histBias > 5 && histBias <= 10) histB_MA += 2;
+          else if (histBias < 0 && histMaSlope > 0) histB_MA += 1;
+        }
+        
+        if (histMaSlope < 0) histS_MA += 3;
+        if (histBias > 25) histS_MA += 4;
+        else if (histBias > 15) histS_MA += 2;
+        if (histIsBroken) histS_MA = Math.max(histS_MA, 3);
+        histB_MA = Math.min(7, histB_MA);
+        histS_MA = Math.min(7, histS_MA);
+      }
+      
+      // 簡化的 KD 評分
+      let histB_KD = 0, histS_KD = 0;
+      const histLookback20 = data.slice(Math.max(0, histIndex - 21), histIndex - 1);
+      let histHasDivergence = false;
+      if (histLookback20.length > 0) {
+        const histMinP = Math.min(...histLookback20.map(d=>d.price));
+        const histMinK = Math.min(...histLookback20.map(d=>d.k));
+        if (histP < histMinP && histLast.k > histMinK) histHasDivergence = true;
+      }
+      
+      if (is3231) {
+        let histB_KD_Pos = 0;
+        if (histLast.k < 20) histB_KD_Pos = 15;
+        else if (histLast.k < 30) histB_KD_Pos = 5;
+        
+        let histB_KD_Sig = 0;
+        if (histPrev.k !== undefined && histPrev.d !== undefined && histPrev.k < histPrev.d && histLast.k > histLast.d) {
+          if (histLast.k < 50) histB_KD_Sig = 10;
+        }
+        
+        if (histHasDivergence) histB_KD = 25;
+        else histB_KD = Math.min(25, histB_KD_Pos + histB_KD_Sig);
+        
+        if (histLast.k > 80) histS_KD = 25;
+        else if (histLast.k > 70) histS_KD = 15;
+      } else {
+        let histB_KD_Pos = 0;
+        if (histLast.k < 20) histB_KD_Pos = 4;
+        else if (histLast.k < 40) histB_KD_Pos = 2;
+        let histB_KD_Sig = 0;
+        if (histPrev.k !== undefined && histPrev.d !== undefined && histPrev.k < histPrev.d && histLast.k > histLast.d) {
+          if (histLast.k < 20) histB_KD_Sig = 6;
+          else if (histLast.k < 50) histB_KD_Sig = 3;
+        }
+        if (histHasDivergence) histB_KD_Pos = 10;
+        histB_KD = Math.min(10, histB_KD_Pos + histB_KD_Sig);
+        
+        let histS_KD_Pos = 0;
+        if (histLast.k > 80) histS_KD_Pos = 3;
+        else if (histLast.k > 70) histS_KD_Pos = 1;
+        let histS_KD_Sig = 0;
+        if (histPrev.k !== undefined && histPrev.d !== undefined && histPrev.k > histPrev.d && histLast.k < histLast.d) {
+          if (histLast.k > 80) histS_KD_Sig = 7;
+          else if (histLast.k > 50) histS_KD_Sig = 4;
+        }
+        const histLast3K = data.slice(Math.max(0, histIndex - 2), histIndex + 1).map(d => d.k);
+        const histLast3D = data.slice(Math.max(0, histIndex - 2), histIndex + 1).map(d => d.d);
+        const histIsPassivation = histLast3K.length === 3 && histLast3K.every(k => k > 80) && histLast3K.every((k, idx) => k > histLast3D[idx]);
+        
+        histS_KD = Math.min(10, histS_KD_Pos + histS_KD_Sig);
+        if (histIsPassivation) histS_KD = 0;
+      }
+      
+      // 簡化的 RSI 評分
+      let histB_RSI = 0, histS_RSI = 0;
+      let histHasRSIBuyDivergence = false, histHasRSISellDivergence = false;
+      if (histLookback20.length > 0) {
+        const histMinR = Math.min(...histLookback20.map(d=>d.rsiVal));
+        const histMaxR = Math.max(...histLookback20.map(d=>d.rsiVal));
+        const histMinP2 = Math.min(...histLookback20.map(d=>d.price));
+        const histMaxP2 = Math.max(...histLookback20.map(d=>d.price));
+        if (histP < histMinP2 && histLast.rsiVal > histMinR) histHasRSIBuyDivergence = true;
+        if (histP > histMaxP2 && histLast.rsiVal < histMaxR) histHasRSISellDivergence = true;
+      }
+      
+      if (is3231) {
+        let histB_RSI_Pos = 0;
+        if (histLast.rsiVal < 30) histB_RSI_Pos = 15;
+        else if (histLast.rsiVal < 45) histB_RSI_Pos = 5;
+        
+        if (histHasRSIBuyDivergence) histB_RSI = 25;
+        else histB_RSI = histB_RSI_Pos;
+        
+        let histS_RSI_Pos = 0;
+        if (histLast.rsiVal > 75) histS_RSI_Pos = 25;
+        else if (histLast.rsiVal > 60) histS_RSI_Pos = 10;
+        
+        if (histHasRSISellDivergence) histS_RSI = 25;
+        else histS_RSI = histS_RSI_Pos;
+      } else {
+        if (histLast.rsiVal < 30) histB_RSI = 7;
+        else if (histLast.rsiVal < 50) histB_RSI = 5;
+        else if (histLast.rsiVal < 60) histB_RSI = 2;
+        if (histPrev.rsiVal !== undefined && histPrev.rsiVal <= 50 && histLast.rsiVal > 50) histB_RSI += 2;
+        if (histHasRSIBuyDivergence) histB_RSI += 3;
+        histB_RSI = Math.min(10, histB_RSI);
+        
+        if (histLast.rsiVal > 80) histS_RSI = 7;
+        else if (histLast.rsiVal > 70) histS_RSI = 5;
+        else if (histLast.rsiVal > 60) histS_RSI = 2;
+        if (histPrev.rsiVal !== undefined && histPrev.rsiVal >= 50 && histLast.rsiVal < 50) histS_RSI += 2;
+        histS_RSI = Math.min(10, histS_RSI);
+      }
+      
+      // 簡化的 MACD 評分
+      let histB_MACD = 0, histS_MACD = 0;
+      if (is3231) {
+        let histGoldCross = 0, histRedConverge = 0;
+        if (histPrev.macd !== undefined && histPrev.macd < 0 && histLast.macd > 0) histGoldCross = 5;
+        if (histPrev.macd !== undefined && histLast.macd < 0 && histLast.macd > histPrev.macd) histRedConverge = 3;
+        histB_MACD = Math.max(histGoldCross, histRedConverge);
+        histB_MACD = Math.min(5, histB_MACD);
+        
+        let histDeathCross = 0, histGreenConverge = 0;
+        if (histPrev.macd !== undefined && histPrev.macd > 0 && histLast.macd < 0) histDeathCross = 5;
+        if (histPrev.macd !== undefined && histLast.macd > 0 && histLast.macd < histPrev.macd) histGreenConverge = 3;
+        histS_MACD = Math.max(histDeathCross, histGreenConverge);
+        histS_MACD = Math.min(5, histS_MACD);
+      } else {
+        if (histPrev.macd !== undefined && histLast.macd < 0 && histLast.macd > histPrev.macd) histB_MACD += 3;
+        if (histPrev.macd !== undefined && histPrev.macd < 0 && histLast.macd > 0) histB_MACD += 2;
+        if (histLookback20.length > 0) {
+          const histMinO = Math.min(...histLookback20.map(d=>d.macd));
+          if (histP < Math.min(...histLookback20.map(d=>d.price)) && histLast.macd > histMinO && histLast.macd < 0) histB_MACD += 2;
+        }
+        histB_MACD = Math.min(7, histB_MACD);
+        
+        if (histPrev.macd !== undefined && histLast.macd > 0 && histLast.macd < histPrev.macd) histS_MACD += 3;
+        if (histPrev.macd !== undefined && histPrev.macd > 0 && histLast.macd < 0) histS_MACD += 2;
+        histS_MACD = Math.min(7, histS_MACD);
+      }
+      
+      // 簡化的 DMI 評分（僅 6669）
+      let histB_DMI = 0, histS_DMI = 0;
+      if (!is3231) {
+        if (histLast.pdi !== undefined && histLast.mdi !== undefined && histLast.pdi > histLast.mdi) {
+          histB_DMI += 2;
+          if (histPrev.pdi !== undefined && histPrev.mdi !== undefined && histPrev.pdi <= histPrev.mdi && histLast.pdi > histLast.mdi) histB_DMI += 1;
+          if (histPrev.adx !== undefined && histLast.adx > 25 && histLast.adx > histPrev.adx) histB_DMI += 3;
+          else if (histPrev.adx !== undefined && histLast.adx < 25 && histLast.adx > histPrev.adx) histB_DMI += 1;
+        }
+        if (histLast.adx > 50) histB_DMI -= 1;
+        histB_DMI = Math.max(0, Math.min(6, histB_DMI));
+        
+        if (histLast.pdi !== undefined && histLast.mdi !== undefined && histLast.mdi > histLast.pdi) {
+          histS_DMI += 2;
+          if (histPrev.adx !== undefined && histLast.adx > 25 && histLast.adx > histPrev.adx) histS_DMI += 3;
+        }
+        histS_DMI = Math.min(6, histS_DMI);
+      }
+      
+      // 簡化的 BB 評分
+      let histB_BB = 0, histS_BB = 0;
+      const histPb = histLast.pctB ?? 0.5;
+      
+      if (is3231) {
+        if (histPb < 0) histB_BB = 30;
+        else if (histPb < 0.1) histB_BB = map(histPb, 0, 0.1, 30, 25);
+        else if (histPb < 0.3) histB_BB = map(histPb, 0.1, 0.3, 25, 10);
+        else histB_BB = 0;
+        histB_BB = Math.min(30, Math.max(0, histB_BB));
+        
+        if (histPb > 1.0) histS_BB = 30;
+        else if (histPb > 0.9) histS_BB = map(histPb, 0.9, 1.0, 25, 30);
+        else histS_BB = 0;
+        
+        if (histLast.high && histLast.upper && histLast.high > histLast.upper && histP < histLast.upper) {
+          histS_BB = Math.max(histS_BB, 20);
+        }
+        histS_BB = Math.min(30, Math.max(0, histS_BB));
+      } else {
+        if (histPb < 0) histB_BB = 3;
+        else if (histPb < 0.1) histB_BB = 2;
+        if (histLast.mid && histPrev.mid && histLast.mid !== 0) {
+          const histMidSlope = (histLast.mid - histPrev.mid);
+          const histDistToMid = Math.abs((histP - histLast.mid) / histLast.mid);
+          if (histMidSlope > 0 && histDistToMid < 0.01) histB_BB = 2;
+        }
+        histB_BB = Math.min(5, histB_BB);
+        
+        if (histPb > 1.1) histS_BB = 3;
+        else if (histPb > 1.0) histS_BB = 1;
+        if (histLast.high && histLast.upper && histLast.high > histLast.upper && histP < histLast.upper) histS_BB = 2;
+        const histBwOpen = histPrev.bandWidth !== undefined && histLast.bandWidth !== undefined ? (histLast.bandWidth > histPrev.bandWidth) : false;
+        const histVolExp = histLast.volume !== undefined && histLast.volMA5 !== undefined ? (histLast.volume > (histLast.volMA5 * 1.5)) : false;
+        if (histBwOpen && histVolExp && histS_BB > 0) histS_BB = 0;
+        histS_BB = Math.min(5, histS_BB);
+      }
+      
+      // 組合分數
+      const histB_Trend = is3231 ? (histB_MA + histB_MACD) : (histB_MA + histB_MACD + histB_DMI);
+      const histS_Trend = is3231 ? (histS_MA + histS_MACD) : (histS_MA + histS_MACD + histS_DMI);
+      const histB_Osc = histB_RSI + histB_KD;
+      const histS_Osc = histS_RSI + histS_KD;
+      const histB_Vol = histB_BB;
+      const histS_Vol = histS_BB;
+      
+      const histTotalBuyScore = Math.round(histB_Fibo + histB_Hist + histB_Trend + histB_Osc + histB_Vol);
+      const histTotalSellScore = Math.round(histS_Fibo + histS_Hist + histS_Trend + histS_Osc + histS_Vol);
+      
+      historicalScores.push({
+        buy: histTotalBuyScore,
+        sell: histTotalSellScore,
+        date: histLast.fullDate || histLast.date
+      });
+    }
+    
     return { 
       last, prev, fibo, sPerc, maxPrice, minPrice, bias, maSlope, isBroken, fiboValid: fiboValid,
       fiboMaxScore: fiboMaxScore, // 傳遞 FIBO 最大分數，用於顯示
@@ -1088,7 +1438,8 @@ const App = () => {
       sell: { total: totalSellScore, signal: sellSignal },
       buyTotal: totalBuyScore,
       sellTotal: totalSellScore,
-      bbMaxScore: bbMaxScore // 傳遞布林最大分數，用於顯示
+      bbMaxScore: bbMaxScore, // 傳遞布林最大分數，用於顯示
+      historicalScores: historicalScores.reverse() // 反轉順序，讓最舊的在前面
     };
   }, [data, stockSymbol]);
 
@@ -1529,6 +1880,16 @@ const App = () => {
               <div className={`text-sm sm:text-base font-black mt-3 sm:mt-4 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-full ${analysis?.buy?.signal?.color?.includes('emerald') ? 'bg-emerald-500/30 text-emerald-300' : analysis?.buy?.signal?.color?.includes('cyan') ? 'bg-cyan-500/30 text-cyan-300' : analysis?.buy?.signal?.color?.includes('blue') ? 'bg-blue-500/30 text-blue-300' : 'bg-neutral-500/30 text-neutral-300'} shadow-lg`}>
                 {analysis?.buy?.signal?.text ?? '--'}
               </div>
+              {/* 前5天買入分數 */}
+              {analysis?.historicalScores && analysis.historicalScores.length > 0 && (
+                <div className="flex gap-1 sm:gap-2 mt-2 sm:mt-3 justify-center">
+                  {analysis.historicalScores.map((hist, idx) => (
+                    <div key={idx} className="text-[9px] sm:text-[10px] font-mono text-emerald-400/60 bg-emerald-500/10 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded">
+                      {hist.buy}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex-1 sm:pl-6 border-t sm:border-t-0 sm:border-l border-white/5 pt-4 sm:pt-0 w-full sm:w-auto flex flex-col justify-center">
               <div className="flex justify-between items-center border-b border-white/5 pb-1 mb-3">
@@ -1595,6 +1956,16 @@ const App = () => {
               <div className={`text-sm sm:text-base font-black mt-3 sm:mt-4 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-full ${analysis?.sell?.signal?.color?.includes('rose') ? 'bg-rose-500/30 text-rose-300' : analysis?.sell?.signal?.color?.includes('red') ? 'bg-red-600/40 text-red-200 animate-pulse' : analysis?.sell?.signal?.color?.includes('orange') ? 'bg-orange-500/30 text-orange-300' : 'bg-emerald-500/30 text-emerald-300'} shadow-lg`}>
                 {analysis?.sell?.signal?.text ?? '--'}
               </div>
+              {/* 前5天賣出分數 */}
+              {analysis?.historicalScores && analysis.historicalScores.length > 0 && (
+                <div className="flex gap-1 sm:gap-2 mt-2 sm:mt-3 justify-center">
+                  {analysis.historicalScores.map((hist, idx) => (
+                    <div key={idx} className="text-[9px] sm:text-[10px] font-mono text-rose-400/60 bg-rose-500/10 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded">
+                      {hist.sell}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex-1 sm:pl-6 border-t sm:border-t-0 sm:border-l border-white/5 pt-4 sm:pt-0 w-full sm:w-auto flex flex-col justify-center">
               <div className="flex justify-between items-center border-b border-white/5 pb-1 mb-3">
