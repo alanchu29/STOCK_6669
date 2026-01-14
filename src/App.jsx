@@ -554,6 +554,11 @@ const App = () => {
     let s_Fibo = 0;
     const p = last.price;
     const fiboMaxScore = is3231 ? 5 : 35; // 3231 最高 5 分，6669 最高 35 分
+    
+    // 保存詳細資訊供 UI 顯示（僅 6669 使用）
+    let fiboBaseScore = 0;
+    let fiboModifier = 0;
+    let fiboModifierDetails = [];
 
     if (fiboValid) {
       if (is3231) {
@@ -599,14 +604,32 @@ const App = () => {
 
         // K線型態修正
         let modifier = 0;
-        if (last.price > last.open && last.price > prev.price) modifier += 10; // 止跌確認
+        let modifierDetails = [];
+        if (last.price > last.open && last.price > prev.price) {
+          modifier += 10; // 止跌確認
+          modifierDetails.push({ name: '止跌確認', value: 10 });
+        }
         const bodyLen = Math.abs(last.price - last.open);
         const lowerShadow = Math.min(last.price, last.open) - last.low;
-        if (lowerShadow > bodyLen && last.low <= fibo.l382) modifier += 8; // 下影線
-        if (last.volume < (last.volMA5 * 0.7)) modifier += 5; // 量縮
-        if (last.price < last.open && bodyLen > (last.atr * 1.5)) modifier -= 10; // 殺盤
+        if (lowerShadow > bodyLen && last.low <= fibo.l382) {
+          modifier += 8; // 下影線
+          modifierDetails.push({ name: '下影線', value: 8 });
+        }
+        if (last.volume < (last.volMA5 * 0.7)) {
+          modifier += 5; // 量縮
+          modifierDetails.push({ name: '量縮', value: 5 });
+        }
+        if (last.price < last.open && bodyLen > (last.atr * 1.5)) {
+          modifier -= 10; // 殺盤
+          modifierDetails.push({ name: '殺盤', value: -10 });
+        }
 
         b_Fibo = Math.min(35, Math.max(0, baseScore + modifier));
+        
+        // 保存詳細資訊供 UI 顯示
+        fiboBaseScore = baseScore;
+        fiboModifier = modifier;
+        fiboModifierDetails = modifierDetails;
 
         // 賣出
         if (last.high >= fibo.ext1618) s_Fibo = 35; // 獲利滿足
@@ -1422,7 +1445,14 @@ const App = () => {
       maMaxScore: maMaxScore, // 傳遞 MA 最大分數，用於顯示
       macdMaxScore: macdMaxScore, // 傳遞 MACD 最大分數，用於顯示
       scores: {
-        fibo: { buy: b_Fibo, sell: s_Fibo },
+        fibo: { 
+          buy: b_Fibo, 
+          sell: s_Fibo,
+          // 6669 專用：詳細分數資訊
+          baseScore: !is3231 ? fiboBaseScore : undefined,
+          modifier: !is3231 ? fiboModifier : undefined,
+          modifierDetails: !is3231 ? fiboModifierDetails : undefined
+        },
         slope: { buy: b_Hist, sell: s_Hist },
         trend: { buy: b_Trend, sell: s_Trend },
         osc: { buy: b_Osc, sell: s_Osc },
@@ -1662,6 +1692,12 @@ const App = () => {
             }
           }
           
+          // 取得分數詳細資訊
+          const fiboScore = analysis?.scores?.fibo || {};
+          const baseScore = fiboScore.baseScore;
+          const modifier = fiboScore.modifier;
+          const modifierDetails = fiboScore.modifierDetails || [];
+          
           return (
             <div className="flex flex-col gap-1 mt-1">
               {/* 當前區間顯示 */}
@@ -1669,6 +1705,47 @@ const App = () => {
                 <div className="mb-2 pb-2 border-b border-white/10">
                   <div className="text-[10px] text-neutral-400 mb-0.5">當前區間</div>
                   <div className="text-xs font-semibold" style={{color: rangeColor}}>{currentRange}</div>
+                </div>
+              )}
+              
+              {/* 分數詳細資訊 */}
+              {baseScore !== undefined && (
+                <div className={`mb-2 ${currentRange ? 'pb-2 border-b border-white/10' : ''}`}>
+                  <div className="text-[10px] text-neutral-400 mb-1">配分明細</div>
+                  <div className="text-[10px] space-y-0.5">
+                    <div className="flex justify-between">
+                      <span className="text-neutral-300">基礎分數</span>
+                      <span className="font-mono text-neutral-200">{Math.round(baseScore)}分</span>
+                    </div>
+                    {modifierDetails.length > 0 && (
+                      <>
+                        {modifierDetails.map((detail, idx) => (
+                          <div key={idx} className="flex justify-between">
+                            <span className={detail.value > 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                              {detail.name}
+                            </span>
+                            <span className={`font-mono ${detail.value > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {detail.value > 0 ? '+' : ''}{detail.value}分
+                            </span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between pt-0.5 border-t border-white/5 mt-0.5">
+                          <span className="text-neutral-200 font-semibold">總分</span>
+                          <span className="font-mono text-emerald-400 font-semibold">
+                            {Math.round(baseScore + modifier)}分
+                          </span>
+                        </div>
+                      </>
+                    )}
+                    {modifierDetails.length === 0 && modifier === 0 && (
+                      <div className="flex justify-between pt-0.5 border-t border-white/5 mt-0.5">
+                        <span className="text-neutral-200 font-semibold">總分</span>
+                        <span className="font-mono text-emerald-400 font-semibold">
+                          {Math.round(baseScore)}分
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
               <div className="flex justify-between items-center text-xs">
