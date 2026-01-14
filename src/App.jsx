@@ -682,6 +682,8 @@ const App = () => {
     const maMaxScore = is3231 ? 10 : 7; // 3231 權重 10 分（月線），6669 權重 7 分（季線）
     let b_MA = 0;
     let s_MA = 0;
+    let maBuyDetails = [];
+    let maSellDetails = [];
     
     if (is3231) {
       // === 3231 緯創：短線波段版 MA 評分（10分，MA20月線） ===
@@ -690,19 +692,31 @@ const App = () => {
       const isBroken = p < maValue; // 今日收盤價 < MA20
       
       // 買入評分（只看負乖離）
-      if (bias < -6) b_MA = 10; // 急跌超賣區，滿分
-      else if (bias < -3) b_MA = 6; // 顯著負乖離
-      else if (bias <= 0) b_MA = 3; // 回測支撐
-      // bias > 0 給 0 分
+      if (bias < -6) {
+        b_MA = 10;
+        maBuyDetails.push({ name: '急跌超賣區', value: 10 });
+      } else if (bias < -3) {
+        b_MA = 6;
+        maBuyDetails.push({ name: '顯著負乖離', value: 6 });
+      } else if (bias <= 0) {
+        b_MA = 3;
+        maBuyDetails.push({ name: '回測支撐', value: 3 });
+      }
       
       // 賣出評分（正乖離 + 跌破）
-      if (bias > 8) s_MA = 10; // 急漲超買區，滿分
-      else if (bias > 4) s_MA = 6; // 獲利警戒區
-      // bias <= 4% 給 0 分（但可能被跌破分數覆蓋）
+      if (bias > 8) {
+        s_MA = 10;
+        maSellDetails.push({ name: '急漲超買區', value: 10 });
+      } else if (bias > 4) {
+        s_MA = 6;
+        maSellDetails.push({ name: '獲利警戒區', value: 6 });
+      }
       
       // 跌破分數（停利/停損）
       if (isBroken) {
-        s_MA = Math.max(s_MA, 3); // 至少給 3 分
+        s_MA = Math.max(s_MA, 3);
+        if (s_MA === 3) maSellDetails = [{ name: '跌破月線', value: 3 }];
+        else maSellDetails.push({ name: '跌破月線', value: 3 });
       }
       
       b_MA = Math.min(maMaxScore, b_MA);
@@ -715,16 +729,38 @@ const App = () => {
       const isBroken = last3Days.length === 3 && last3Days.every(d => d.price < d.ma60);
 
       if (!isBroken) {
-        if (maSlope > 0) b_MA += 3;
-        if (bias > 0 && bias <= 5) b_MA += 4;
-        else if (bias > 5 && bias <= 10) b_MA += 2;
-        else if (bias < 0 && maSlope > 0) b_MA += 1;
+        if (maSlope > 0) {
+          b_MA += 3;
+          maBuyDetails.push({ name: '季線向上', value: 3 });
+        }
+        if (bias > 0 && bias <= 5) {
+          b_MA += 4;
+          maBuyDetails.push({ name: '正乖離0-5%', value: 4 });
+        } else if (bias > 5 && bias <= 10) {
+          b_MA += 2;
+          maBuyDetails.push({ name: '正乖離5-10%', value: 2 });
+        } else if (bias < 0 && maSlope > 0) {
+          b_MA += 1;
+          maBuyDetails.push({ name: '負乖離但季線向上', value: 1 });
+        }
       }
       
-      if (maSlope < 0) s_MA += 3;
-      if (bias > 25) s_MA += 4;
-      else if (bias > 15) s_MA += 2;
-      if (isBroken) s_MA = Math.max(s_MA, 3);
+      if (maSlope < 0) {
+        s_MA += 3;
+        maSellDetails.push({ name: '季線向下', value: 3 });
+      }
+      if (bias > 25) {
+        s_MA += 4;
+        maSellDetails.push({ name: '正乖離>25%', value: 4 });
+      } else if (bias > 15) {
+        s_MA += 2;
+        maSellDetails.push({ name: '正乖離15-25%', value: 2 });
+      }
+      if (isBroken) {
+        s_MA = Math.max(s_MA, 3);
+        if (s_MA === 3) maSellDetails = [{ name: '跌破季線', value: 3 }];
+        else maSellDetails.push({ name: '跌破季線', value: 3 });
+      }
       b_MA = Math.min(7, b_MA);
       s_MA = Math.min(7, s_MA);
     }
@@ -733,6 +769,8 @@ const App = () => {
     const kdMaxScore = is3231 ? 25 : 10; // 3231 權重 25 分，6669 權重 10 分
     let b_KD = 0;
     let s_KD = 0;
+    let kdBuyDetails = [];
+    let kdSellDetails = [];
     
     // 背離判斷（兩者共用）
     const lookback20 = data.slice(-22, -2);
@@ -747,29 +785,40 @@ const App = () => {
       // === 3231 緯創：短線波段版 KD 評分（25分） ===
       // 買入評分
       let b_KD_Pos = 0;
-      if (last.k < 20) b_KD_Pos = 15; // 極度超賣區
-      else if (last.k < 30) b_KD_Pos = 5; // 超賣邊緣
-      // K >= 30 給 0 分
+      if (last.k < 20) {
+        b_KD_Pos = 15;
+        kdBuyDetails.push({ name: 'K<20 極度超賣', value: 15 });
+      } else if (last.k < 30) {
+        b_KD_Pos = 5;
+        kdBuyDetails.push({ name: 'K<30 超賣邊緣', value: 5 });
+      }
       
       let b_KD_Sig = 0;
       // 金叉訊號
       if (prev.k !== undefined && prev.d !== undefined && prev.k < prev.d && last.k > last.d) {
-        if (last.k < 50) b_KD_Sig = 10; // 低檔金叉確認
-        // K >= 50 給 0 分
+        if (last.k < 50) {
+          b_KD_Sig = 10;
+          kdBuyDetails.push({ name: '低檔金叉', value: 10 });
+        }
       }
       
       // 背離加分（優先級最高，直接滿分）
       if (hasDivergence) {
-        b_KD = kdMaxScore; // 25 分滿分
+        b_KD = kdMaxScore;
+        kdBuyDetails = [{ name: '價格背離', value: kdMaxScore }];
       } else {
         b_KD = Math.min(kdMaxScore, b_KD_Pos + b_KD_Sig);
       }
       
       // 賣出評分
       let s_KD_Pos = 0;
-      if (last.k > 80) s_KD_Pos = 25; // 極度超買區，直接滿分
-      else if (last.k > 70) s_KD_Pos = 15; // 警戒區
-      // K <= 70 給 0 分
+      if (last.k > 80) {
+        s_KD_Pos = 25;
+        kdSellDetails.push({ name: 'K>80 極度超買', value: 25 });
+      } else if (last.k > 70) {
+        s_KD_Pos = 15;
+        kdSellDetails.push({ name: 'K>70 警戒區', value: 15 });
+      }
       
       // 3231 不等待死叉，不設訊號分數，也不設鈍化保護
       s_KD = s_KD_Pos; // 只看位階分數
@@ -777,27 +826,48 @@ const App = () => {
       // === 6669：原版 KD 評分（10分） ===
       // 買入
       let b_KD_Pos = 0;
-      if (last.k < 20) b_KD_Pos = 4;
-      else if (last.k < 40) b_KD_Pos = 2;
+      if (last.k < 20) {
+        b_KD_Pos = 4;
+        kdBuyDetails.push({ name: 'K<20', value: 4 });
+      } else if (last.k < 40) {
+        b_KD_Pos = 2;
+        kdBuyDetails.push({ name: 'K<40', value: 2 });
+      }
       let b_KD_Sig = 0;
       if (prev.k !== undefined && prev.d !== undefined && prev.k < prev.d && last.k > last.d) {
-        if (last.k < 20) b_KD_Sig = 6;
-        else if (last.k < 50) b_KD_Sig = 3;
+        if (last.k < 20) {
+          b_KD_Sig = 6;
+          kdBuyDetails.push({ name: '低檔金叉(K<20)', value: 6 });
+        } else if (last.k < 50) {
+          b_KD_Sig = 3;
+          kdBuyDetails.push({ name: '金叉(K<50)', value: 3 });
+        }
       }
       // 背離加分
       if (hasDivergence) {
-        b_KD_Pos = 10; // 背離直接滿分
+        b_KD_Pos = 10;
+        kdBuyDetails = [{ name: '價格背離', value: 10 }];
       }
       b_KD = Math.min(10, b_KD_Pos + b_KD_Sig);
 
       // 賣出
       let s_KD_Pos = 0;
-      if (last.k > 80) s_KD_Pos = 3;
-      else if (last.k > 70) s_KD_Pos = 1;
+      if (last.k > 80) {
+        s_KD_Pos = 3;
+        kdSellDetails.push({ name: 'K>80', value: 3 });
+      } else if (last.k > 70) {
+        s_KD_Pos = 1;
+        kdSellDetails.push({ name: 'K>70', value: 1 });
+      }
       let s_KD_Sig = 0;
       if (prev.k !== undefined && prev.d !== undefined && prev.k > prev.d && last.k < last.d) {
-        if (last.k > 80) s_KD_Sig = 7;
-        else if (last.k > 50) s_KD_Sig = 4;
+        if (last.k > 80) {
+          s_KD_Sig = 7;
+          kdSellDetails.push({ name: '高檔死叉(K>80)', value: 7 });
+        } else if (last.k > 50) {
+          s_KD_Sig = 4;
+          kdSellDetails.push({ name: '死叉(K>50)', value: 4 });
+        }
       }
       // 鈍化保護
       const last3K = data.slice(-3).map(d => d.k);
@@ -805,13 +875,18 @@ const App = () => {
       const isPassivation = last3K.length === 3 && last3K.every(k => k > 80) && last3K.every((k,i) => k > last3D[i]);
       
       s_KD = Math.min(10, s_KD_Pos + s_KD_Sig);
-      if (isPassivation) s_KD = 0;
+      if (isPassivation) {
+        s_KD = 0;
+        kdSellDetails = [{ name: '鈍化保護', value: 0 }];
+      }
     }
 
     // === RSI 評分 ===
     const rsiMaxScore = is3231 ? 25 : 10; // 3231 權重 25 分，6669 權重 10 分
     let b_RSI = 0;
     let s_RSI = 0;
+    let rsiBuyDetails = [];
+    let rsiSellDetails = [];
     
     // 背離判斷（兩者共用）
     let hasRSIBuyDivergence = false; // 底背離
@@ -837,47 +912,78 @@ const App = () => {
       // === 3231 緯創：短線波段版 RSI 評分（25分） ===
       // 買入評分
       let b_RSI_Pos = 0;
-      if (last.rsiVal < 30) b_RSI_Pos = 15; // 極度超賣區
-      else if (last.rsiVal < 45) b_RSI_Pos = 5; // 弱勢整理區
-      // RSI >= 45 給 0 分
+      if (last.rsiVal < 30) {
+        b_RSI_Pos = 15;
+        rsiBuyDetails.push({ name: 'RSI<30 極度超賣', value: 15 });
+      } else if (last.rsiVal < 45) {
+        b_RSI_Pos = 5;
+        rsiBuyDetails.push({ name: 'RSI<45 弱勢整理', value: 5 });
+      }
       
       // 底背離加分（優先級最高，直接滿分）
       if (hasRSIBuyDivergence) {
-        b_RSI = rsiMaxScore; // 25 分滿分
+        b_RSI = rsiMaxScore;
+        rsiBuyDetails = [{ name: '底背離', value: rsiMaxScore }];
       } else {
-        b_RSI = b_RSI_Pos; // 只看位階分數
+        b_RSI = b_RSI_Pos;
       }
       
       // 賣出評分
       let s_RSI_Pos = 0;
-      if (last.rsiVal > 75) s_RSI_Pos = 25; // 極度超買區，直接滿分
-      else if (last.rsiVal > 60) s_RSI_Pos = 10; // 相對高檔
-      // RSI <= 60 給 0 分
+      if (last.rsiVal > 75) {
+        s_RSI_Pos = 25;
+        rsiSellDetails.push({ name: 'RSI>75 極度超買', value: 25 });
+      } else if (last.rsiVal > 60) {
+        s_RSI_Pos = 10;
+        rsiSellDetails.push({ name: 'RSI>60 相對高檔', value: 10 });
+      }
       
       // 頂背離加分（優先級最高，直接滿分）
       if (hasRSISellDivergence) {
-        s_RSI = rsiMaxScore; // 25 分滿分
+        s_RSI = rsiMaxScore;
+        rsiSellDetails = [{ name: '頂背離', value: rsiMaxScore }];
       } else {
-        s_RSI = s_RSI_Pos; // 只看位階分數
+        s_RSI = s_RSI_Pos;
       }
     } else {
       // === 6669：原版 RSI 評分（10分） ===
       // 買入
-      if (last.rsiVal < 30) b_RSI = 7;
-      else if (last.rsiVal < 50) b_RSI = 5;
-      else if (last.rsiVal < 60) b_RSI = 2;
-      if (prev.rsiVal !== undefined && prev.rsiVal <= 50 && last.rsiVal > 50) b_RSI += 2; // 突破50
+      if (last.rsiVal < 30) {
+        b_RSI = 7;
+        rsiBuyDetails.push({ name: 'RSI<30', value: 7 });
+      } else if (last.rsiVal < 50) {
+        b_RSI = 5;
+        rsiBuyDetails.push({ name: 'RSI<50', value: 5 });
+      } else if (last.rsiVal < 60) {
+        b_RSI = 2;
+        rsiBuyDetails.push({ name: 'RSI<60', value: 2 });
+      }
+      if (prev.rsiVal !== undefined && prev.rsiVal <= 50 && last.rsiVal > 50) {
+        b_RSI += 2;
+        rsiBuyDetails.push({ name: '突破50', value: 2 });
+      }
       // 底背離
       if (hasRSIBuyDivergence) {
         b_RSI += 3;
+        rsiBuyDetails.push({ name: '底背離', value: 3 });
       }
       b_RSI = Math.min(10, b_RSI);
 
       // 賣出
-      if (last.rsiVal > 80) s_RSI = 7;
-      else if (last.rsiVal > 70) s_RSI = 5;
-      else if (last.rsiVal > 60) s_RSI = 2;
-      if (prev.rsiVal !== undefined && prev.rsiVal >= 50 && last.rsiVal < 50) s_RSI += 2; // 跌破50
+      if (last.rsiVal > 80) {
+        s_RSI = 7;
+        rsiSellDetails.push({ name: 'RSI>80', value: 7 });
+      } else if (last.rsiVal > 70) {
+        s_RSI = 5;
+        rsiSellDetails.push({ name: 'RSI>70', value: 5 });
+      } else if (last.rsiVal > 60) {
+        s_RSI = 2;
+        rsiSellDetails.push({ name: 'RSI>60', value: 2 });
+      }
+      if (prev.rsiVal !== undefined && prev.rsiVal >= 50 && last.rsiVal < 50) {
+        s_RSI += 2;
+        rsiSellDetails.push({ name: '跌破50', value: 2 });
+      }
       s_RSI = Math.min(10, s_RSI);
     }
 
@@ -1457,11 +1563,26 @@ const App = () => {
         trend: { buy: b_Trend, sell: s_Trend },
         osc: { buy: b_Osc, sell: s_Osc },
         vol: { buy: b_Vol, sell: s_Vol },
-        ma: { buy: b_MA, sell: s_MA },
+        ma: { 
+          buy: b_MA, 
+          sell: s_MA,
+          buyDetails: maBuyDetails,
+          sellDetails: maSellDetails
+        },
         macd: { buy: b_MACD, sell: s_MACD },
         dmi: { buy: b_DMI, sell: s_DMI },
-        rsi: { buy: b_RSI, sell: s_RSI },
-        kd: { buy: b_KD, sell: s_KD },
+        rsi: { 
+          buy: b_RSI, 
+          sell: s_RSI,
+          buyDetails: rsiBuyDetails,
+          sellDetails: rsiSellDetails
+        },
+        kd: { 
+          buy: b_KD, 
+          sell: s_KD,
+          buyDetails: kdBuyDetails,
+          sellDetails: kdSellDetails
+        },
         bb: { buy: b_BB, sell: s_BB }
       },
       buy: { total: totalBuyScore, signal: buySignal },
@@ -2306,7 +2427,7 @@ const App = () => {
             <div 
               key={card.key} 
               onClick={() => toggleLayer(card.key)}
-              className={`p-4 sm:p-6 rounded-2xl sm:rounded-[2.5rem] border-2 transition-all cursor-pointer shadow-lg flex flex-col h-[320px] sm:h-[340px] overflow-hidden
+              className={`p-4 sm:p-6 rounded-2xl sm:rounded-[2.5rem] border-2 transition-all cursor-pointer shadow-lg flex flex-col h-[384px] sm:h-[408px] overflow-hidden
                 ${visibleLayers[card.key] 
                   ? 'ring-2 ring-opacity-50' 
                   : 'hover:border-opacity-80'}`}
@@ -2363,6 +2484,79 @@ const App = () => {
                       card.key === 'bb' ? (analysis?.bbMaxScore || (is3231 ? 30 : 5)) : 5
                     }</span>
                   </div>
+                  
+                  {/* 配分明細顯示 */}
+                  {(scoreObj.buyDetails || scoreObj.sellDetails || scoreObj.baseScore !== undefined) && (
+                    <div className="mt-3 pt-3 border-t border-white/5">
+                      <div className="text-[9px] text-neutral-400 mb-1.5">配分明細</div>
+                      <div className="text-[9px] space-y-1">
+                        {/* 買入配分明細 */}
+                        {scoreObj.buy > 0 && (
+                          <div>
+                            <div className="text-emerald-400/80 mb-0.5 font-semibold">買入</div>
+                            {scoreObj.baseScore !== undefined ? (
+                              // FIBO 特殊顯示（基礎分數 + 修正）
+                              <>
+                                <div className="flex justify-between text-neutral-300">
+                                  <span>基礎分數</span>
+                                  <span className="font-mono">{Math.round(scoreObj.baseScore)}分</span>
+                                </div>
+                                {scoreObj.modifierDetails && scoreObj.modifierDetails.length > 0 && (
+                                  <>
+                                    {scoreObj.modifierDetails.map((detail, idx) => (
+                                      <div key={idx} className="flex justify-between">
+                                        <span className={detail.value > 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                          {detail.name}
+                                        </span>
+                                        <span className={`font-mono ${detail.value > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                          {detail.value > 0 ? '+' : ''}{detail.value}分
+                                        </span>
+                                      </div>
+                                    ))}
+                                    <div className="flex justify-between pt-0.5 border-t border-white/5 mt-0.5">
+                                      <span className="text-neutral-200 font-semibold">總分</span>
+                                      <span className="font-mono text-emerald-400 font-semibold">
+                                        {Math.round(scoreObj.baseScore + (scoreObj.modifier || 0))}分
+                                      </span>
+                                    </div>
+                                  </>
+                                )}
+                              </>
+                            ) : (
+                              // 其他指標的詳細資訊
+                              scoreObj.buyDetails && scoreObj.buyDetails.length > 0 ? (
+                                scoreObj.buyDetails.map((detail, idx) => (
+                                  <div key={idx} className="flex justify-between">
+                                    <span className="text-emerald-400">{detail.name}</span>
+                                    <span className="font-mono text-emerald-400">{detail.value}分</span>
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="text-neutral-400">無詳細資訊</div>
+                              )
+                            )}
+                          </div>
+                        )}
+                        
+                        {/* 賣出配分明細 */}
+                        {scoreObj.sell > 0 && (
+                          <div className={scoreObj.buy > 0 ? 'mt-2 pt-2 border-t border-white/5' : ''}>
+                            <div className="text-rose-400/80 mb-0.5 font-semibold">賣出</div>
+                            {scoreObj.sellDetails && scoreObj.sellDetails.length > 0 ? (
+                              scoreObj.sellDetails.map((detail, idx) => (
+                                <div key={idx} className="flex justify-between">
+                                  <span className="text-rose-400">{detail.name}</span>
+                                  <span className="font-mono text-rose-400">{detail.value}分</span>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="text-neutral-400">無詳細資訊</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
