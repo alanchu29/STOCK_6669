@@ -2468,7 +2468,7 @@ const App = () => {
             <div 
               key={card.key} 
               onClick={() => toggleLayer(card.key)}
-              className={`p-4 sm:p-6 rounded-2xl sm:rounded-[2.5rem] border-2 transition-all cursor-pointer shadow-lg flex flex-col h-[384px] sm:h-[408px] overflow-hidden
+              className={`p-4 sm:p-6 rounded-2xl sm:rounded-[2.5rem] border-2 transition-all cursor-pointer shadow-lg flex flex-col h-[461px] sm:h-[490px] overflow-hidden
                 ${visibleLayers[card.key] 
                   ? 'ring-2 ring-opacity-50' 
                   : 'hover:border-opacity-80'}`}
