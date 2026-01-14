@@ -643,37 +643,41 @@ const App = () => {
     // 3231 不列入評分，6669 正常計算
     let b_Hist = 0;
     let s_Hist = 0;
+    let slopeBuyDetails = [];
+    let slopeSellDetails = [];
     
     if (!is3231) {
       // 6669：正常計算斜率評分
       // 買入 - 線性給分
       let b_Slope_Rank = 0;
       if (sPerc < 10) {
-        // 極度超跌區間：從 0% 到 10%，分數從 15 到 10
         b_Slope_Rank = map(sPerc, 0, 10, 15, 10);
+        slopeBuyDetails.push({ name: `斜率<10%`, value: Math.round(b_Slope_Rank) });
       } else if (sPerc < 25) {
-        // 價值區間：從 10% 到 25%，分數從 10 到 5
         b_Slope_Rank = map(sPerc, 10, 25, 10, 5);
+        slopeBuyDetails.push({ name: `斜率10-25%`, value: Math.round(b_Slope_Rank) });
       } else if (sPerc < 40) {
-        // 初步區間：從 25% 到 40%，分數從 5 到 0
         b_Slope_Rank = map(sPerc, 25, 40, 5, 0);
+        slopeBuyDetails.push({ name: `斜率25-40%`, value: Math.round(b_Slope_Rank) });
       }
       const b_Slope_Mom = (last.slopeVal > prev.slopeVal) ? 5 : 0;
+      if (b_Slope_Mom > 0) slopeBuyDetails.push({ name: '斜率向上', value: 5 });
       b_Hist = (b_Slope_Rank > 0) ? b_Slope_Rank + b_Slope_Mom : 0;
 
       // 賣出 - 線性給分
       let s_Slope_Rank = 0;
       if (sPerc > 90) {
-        // 極度過熱區間：從 90% 到 100%，分數從 10 到 15
         s_Slope_Rank = map(sPerc, 90, 100, 10, 15);
+        slopeSellDetails.push({ name: `斜率>90%`, value: Math.round(s_Slope_Rank) });
       } else if (sPerc > 75) {
-        // 警戒區間：從 75% 到 90%，分數從 5 到 10
         s_Slope_Rank = map(sPerc, 75, 90, 5, 10);
+        slopeSellDetails.push({ name: `斜率75-90%`, value: Math.round(s_Slope_Rank) });
       } else if (sPerc > 60) {
-        // 初步區間：從 60% 到 75%，分數從 0 到 5
         s_Slope_Rank = map(sPerc, 60, 75, 0, 5);
+        slopeSellDetails.push({ name: `斜率60-75%`, value: Math.round(s_Slope_Rank) });
       }
       const s_Slope_Mom = (last.slopeVal < prev.slopeVal) ? 5 : 0;
+      if (s_Slope_Mom > 0) slopeSellDetails.push({ name: '斜率向下', value: 5 });
       s_Hist = (s_Slope_Rank > 0) ? s_Slope_Rank + s_Slope_Mom : 0;
     }
     // 3231：b_Hist 和 s_Hist 保持為 0（不列入評分）
@@ -991,6 +995,8 @@ const App = () => {
     const macdMaxScore = is3231 ? 5 : 7; // 3231 權重 5 分，6669 權重 7 分
     let b_MACD = 0;
     let s_MACD = 0;
+    let macdBuyDetails = [];
+    let macdSellDetails = [];
     
     if (is3231) {
       // === 3231 緯創：短線波段版 MACD 評分（5分） ===
@@ -1000,16 +1006,17 @@ const App = () => {
       
       // 黃金交叉（優先級最高）
       if (prev.macd !== undefined && prev.macd < 0 && last.macd > 0) {
-        goldCross = 5; // 滿分
+        goldCross = 5;
+        macdBuyDetails.push({ name: '黃金交叉', value: 5 });
       }
       
       // 紅柱收斂（止跌訊號）
       if (prev.macd !== undefined && last.macd < 0 && last.macd > prev.macd) {
-        redConverge = 3; // 基礎分
+        redConverge = 3;
+        if (goldCross === 0) macdBuyDetails.push({ name: '紅柱收斂', value: 3 });
       }
-      // 紅柱擴大（殺盤持續）給 0 分，不需要特別處理
       
-      b_MACD = Math.max(goldCross, redConverge); // 取最大值
+      b_MACD = Math.max(goldCross, redConverge);
       b_MACD = Math.min(macdMaxScore, b_MACD);
       
       // 賣出評分
@@ -1018,30 +1025,46 @@ const App = () => {
       
       // 死亡交叉（優先級最高）
       if (prev.macd !== undefined && prev.macd > 0 && last.macd < 0) {
-        deathCross = 5; // 滿分
+        deathCross = 5;
+        macdSellDetails.push({ name: '死亡交叉', value: 5 });
       }
       
       // 綠柱收斂（上攻無力）
       if (prev.macd !== undefined && last.macd > 0 && last.macd < prev.macd) {
-        greenConverge = 3; // 基礎分
+        greenConverge = 3;
+        if (deathCross === 0) macdSellDetails.push({ name: '綠柱收斂', value: 3 });
       }
-      // 綠柱擴大（主升段）給 0 分，不需要特別處理
       
-      s_MACD = Math.max(deathCross, greenConverge); // 取最大值
+      s_MACD = Math.max(deathCross, greenConverge);
       s_MACD = Math.min(macdMaxScore, s_MACD);
     } else {
       // === 6669：原版 MACD 評分（7分） ===
-      if (prev.macd !== undefined && last.macd < 0 && last.macd > prev.macd) b_MACD += 3; // 紅收斂
-      if (prev.macd !== undefined && prev.macd < 0 && last.macd > 0) b_MACD += 2; // 金叉
+      if (prev.macd !== undefined && last.macd < 0 && last.macd > prev.macd) {
+        b_MACD += 3;
+        macdBuyDetails.push({ name: '紅柱收斂', value: 3 });
+      }
+      if (prev.macd !== undefined && prev.macd < 0 && last.macd > 0) {
+        b_MACD += 2;
+        macdBuyDetails.push({ name: '零軸金叉', value: 2 });
+      }
       // 底背離
       if (lookback20.length > 0) {
         const minO = Math.min(...lookback20.map(d=>d.macd));
-        if (p < Math.min(...lookback20.map(d=>d.price)) && last.macd > minO && last.macd < 0) b_MACD += 2;
+        if (p < Math.min(...lookback20.map(d=>d.price)) && last.macd > minO && last.macd < 0) {
+          b_MACD += 2;
+          macdBuyDetails.push({ name: '底背離', value: 2 });
+        }
       }
       b_MACD = Math.min(7, b_MACD);
 
-      if (prev.macd !== undefined && last.macd > 0 && last.macd < prev.macd) s_MACD += 3; // 綠收斂
-      if (prev.macd !== undefined && prev.macd > 0 && last.macd < 0) s_MACD += 2; // 死叉
+      if (prev.macd !== undefined && last.macd > 0 && last.macd < prev.macd) {
+        s_MACD += 3;
+        macdSellDetails.push({ name: '綠柱收斂', value: 3 });
+      }
+      if (prev.macd !== undefined && prev.macd > 0 && last.macd < 0) {
+        s_MACD += 2;
+        macdSellDetails.push({ name: '零軸死叉', value: 2 });
+      }
       s_MACD = Math.min(7, s_MACD);
     }
 
@@ -1049,21 +1072,39 @@ const App = () => {
     // 3231 不列入評分，6669 正常計算
     let b_DMI = 0;
     let s_DMI = 0;
+    let dmiBuyDetails = [];
+    let dmiSellDetails = [];
     
     if (!is3231) {
       // 6669：正常計算 DMI 評分
       if (last.pdi !== undefined && last.mdi !== undefined && last.pdi > last.mdi) {
         b_DMI += 2;
-        if (prev.pdi !== undefined && prev.mdi !== undefined && prev.pdi <= prev.mdi && last.pdi > last.mdi) b_DMI += 1;
-        if (prev.adx !== undefined && last.adx > 25 && last.adx > prev.adx) b_DMI += 3;
-        else if (prev.adx !== undefined && last.adx < 25 && last.adx > prev.adx) b_DMI += 1;
+        dmiBuyDetails.push({ name: '+DI > -DI', value: 2 });
+        if (prev.pdi !== undefined && prev.mdi !== undefined && prev.pdi <= prev.mdi && last.pdi > last.mdi) {
+          b_DMI += 1;
+          dmiBuyDetails.push({ name: '金叉', value: 1 });
+        }
+        if (prev.adx !== undefined && last.adx > 25 && last.adx > prev.adx) {
+          b_DMI += 3;
+          dmiBuyDetails.push({ name: 'ADX>25且向上', value: 3 });
+        } else if (prev.adx !== undefined && last.adx < 25 && last.adx > prev.adx) {
+          b_DMI += 1;
+          dmiBuyDetails.push({ name: 'ADX向上', value: 1 });
+        }
       }
-      if (last.adx > 50) b_DMI -= 1;
+      if (last.adx > 50) {
+        b_DMI -= 1;
+        dmiBuyDetails.push({ name: 'ADX>50過熱', value: -1 });
+      }
       b_DMI = Math.max(0, Math.min(6, b_DMI));
 
       if (last.pdi !== undefined && last.mdi !== undefined && last.mdi > last.pdi) {
         s_DMI += 2;
-        if (prev.adx !== undefined && last.adx > 25 && last.adx > prev.adx) s_DMI += 3;
+        dmiSellDetails.push({ name: '-DI > +DI', value: 2 });
+        if (prev.adx !== undefined && last.adx > 25 && last.adx > prev.adx) {
+          s_DMI += 3;
+          dmiSellDetails.push({ name: 'ADX>25且向上', value: 3 });
+        }
       }
       s_DMI = Math.min(6, s_DMI);
     }
@@ -1084,62 +1125,83 @@ const App = () => {
     let s_BB = 0;
     const bbMaxScore = is3231 ? 30 : 5; // 3231 權重 30%，6669 權重 5%
     
+    let bbBuyDetails = [];
+    let bbSellDetails = [];
+    
     if (is3231) {
       // === 3231 緯創：短線波段版布林評分 (30分，線性給分) ===
       // 使用外層定義的 map 函數
       
       // 【買入評分】抓下軌反彈（線性給分）
       if (pb < 0) {
-        b_BB = 30; // 跌破下軌，超跌：滿分
+        b_BB = 30;
+        bbBuyDetails.push({ name: '%B<0 超跌', value: 30 });
       } else if (pb < 0.1) {
-        // 0 <= %B < 0.1：從 30 到 25 分線性映射
         b_BB = map(pb, 0, 0.1, 30, 25);
+        bbBuyDetails.push({ name: '%B<0.1', value: Math.round(b_BB) });
       } else if (pb < 0.3) {
-        // 0.1 <= %B < 0.3：從 25 到 10 分線性映射
         b_BB = map(pb, 0.1, 0.3, 25, 10);
-      } else {
-        b_BB = 0; // %B >= 0.3：0分
+        bbBuyDetails.push({ name: '%B<0.3', value: Math.round(b_BB) });
       }
       b_BB = Math.min(30, Math.max(0, b_BB));
       
       // 【賣出評分】抓上軌獲利，有賺就跑（線性給分）
       if (pb > 1.0) {
-        s_BB = 30; // 突破上軌：滿分
+        s_BB = 30;
+        bbSellDetails.push({ name: '%B>1.0 突破上軌', value: 30 });
       } else if (pb > 0.9) {
-        // 0.9 < %B <= 1.0：從 25 到 30 分線性映射
         s_BB = map(pb, 0.9, 1.0, 25, 30);
-      } else {
-        s_BB = 0; // %B <= 0.9：0分（但可能被假突破覆蓋）
+        bbSellDetails.push({ name: '%B>0.9', value: Math.round(s_BB) });
       }
       
       // 假突破（最高價 > 上軌 且 收盤價 < 上軌）
       if (last.high && last.upper && last.high > last.upper && p < last.upper) {
-        s_BB = Math.max(s_BB, 20); // 假突破至少 20 分
+        s_BB = Math.max(s_BB, 20);
+        if (s_BB === 20) bbSellDetails = [{ name: '假突破', value: 20 }];
+        else bbSellDetails.push({ name: '假突破', value: 20 });
       }
-      // 注意：3231 移除開口爆量保護機制（短線波段，爆量即過熱，應該賣）
       s_BB = Math.min(30, Math.max(0, s_BB));
     } else {
       // === 6669：原版布林評分 (5分) ===
       // 【買入評分】
-      if (pb < 0) b_BB = 3;
-      else if (pb < 0.1) b_BB = 2;
+      if (pb < 0) {
+        b_BB = 3;
+        bbBuyDetails.push({ name: '%B<0', value: 3 });
+      } else if (pb < 0.1) {
+        b_BB = 2;
+        bbBuyDetails.push({ name: '%B<0.1', value: 2 });
+      }
       // 中軌回測
       if (last.mid && prev.mid && last.mid !== 0) {
         const midSlope = (last.mid - prev.mid);
         const distToMid = Math.abs((p - last.mid) / last.mid);
-        if (midSlope > 0 && distToMid < 0.01) b_BB = 2;
+        if (midSlope > 0 && distToMid < 0.01) {
+          b_BB = 2;
+          bbBuyDetails.push({ name: '回測中軌', value: 2 });
+        }
       }
       b_BB = Math.min(5, b_BB);
       
       // 【賣出評分】
-      if (pb > 1.1) s_BB = 3;
-      else if (pb > 1.0) s_BB = 1;
+      if (pb > 1.1) {
+        s_BB = 3;
+        bbSellDetails.push({ name: '%B>1.1', value: 3 });
+      } else if (pb > 1.0) {
+        s_BB = 1;
+        bbSellDetails.push({ name: '%B>1.0', value: 1 });
+      }
       // 假突破
-      if (last.high && last.upper && last.high > last.upper && p < last.upper) s_BB = 2;
+      if (last.high && last.upper && last.high > last.upper && p < last.upper) {
+        s_BB = 2;
+        bbSellDetails.push({ name: '假突破', value: 2 });
+      }
       // 開口爆量保護（6669 保留此機制）
       const bwOpen = prev.bandWidth !== undefined && last.bandWidth !== undefined ? (last.bandWidth > prev.bandWidth) : false;
       const volExp = last.volume !== undefined && last.volMA5 !== undefined ? (last.volume > (last.volMA5 * 1.5)) : false;
-      if (bwOpen && volExp && s_BB > 0) s_BB = 0;
+      if (bwOpen && volExp && s_BB > 0) {
+        s_BB = 0;
+        bbSellDetails = [{ name: '開口爆量保護', value: 0 }];
+      }
       s_BB = Math.min(5, s_BB);
     }
 
@@ -1559,7 +1621,12 @@ const App = () => {
           modifier: !is3231 ? fiboModifier : undefined,
           modifierDetails: !is3231 ? fiboModifierDetails : undefined
         },
-        slope: { buy: b_Hist, sell: s_Hist },
+        slope: { 
+          buy: b_Hist, 
+          sell: s_Hist,
+          buyDetails: slopeBuyDetails,
+          sellDetails: slopeSellDetails
+        },
         trend: { buy: b_Trend, sell: s_Trend },
         osc: { buy: b_Osc, sell: s_Osc },
         vol: { buy: b_Vol, sell: s_Vol },
@@ -1569,8 +1636,18 @@ const App = () => {
           buyDetails: maBuyDetails,
           sellDetails: maSellDetails
         },
-        macd: { buy: b_MACD, sell: s_MACD },
-        dmi: { buy: b_DMI, sell: s_DMI },
+        macd: { 
+          buy: b_MACD, 
+          sell: s_MACD,
+          buyDetails: macdBuyDetails,
+          sellDetails: macdSellDetails
+        },
+        dmi: { 
+          buy: b_DMI, 
+          sell: s_DMI,
+          buyDetails: dmiBuyDetails,
+          sellDetails: dmiSellDetails
+        },
         rsi: { 
           buy: b_RSI, 
           sell: s_RSI,
@@ -1583,7 +1660,12 @@ const App = () => {
           buyDetails: kdBuyDetails,
           sellDetails: kdSellDetails
         },
-        bb: { buy: b_BB, sell: s_BB }
+        bb: { 
+          buy: b_BB, 
+          sell: s_BB,
+          buyDetails: bbBuyDetails,
+          sellDetails: bbSellDetails
+        }
       },
       buy: { total: totalBuyScore, signal: buySignal },
       sell: { total: totalSellScore, signal: sellSignal },
@@ -1826,47 +1908,6 @@ const App = () => {
                 <div className="mb-2 pb-2 border-b border-white/10">
                   <div className="text-[10px] text-neutral-400 mb-0.5">當前區間</div>
                   <div className="text-xs font-semibold" style={{color: rangeColor}}>{currentRange}</div>
-                </div>
-              )}
-              
-              {/* 分數詳細資訊 */}
-              {baseScore !== undefined && (
-                <div className={`mb-2 ${currentRange ? 'pb-2 border-b border-white/10' : ''}`}>
-                  <div className="text-[10px] text-neutral-400 mb-1">配分明細</div>
-                  <div className="text-[10px] space-y-0.5">
-                    <div className="flex justify-between">
-                      <span className="text-neutral-300">基礎分數</span>
-                      <span className="font-mono text-neutral-200">{Math.round(baseScore)}分</span>
-                    </div>
-                    {modifierDetails.length > 0 && (
-                      <>
-                        {modifierDetails.map((detail, idx) => (
-                          <div key={idx} className="flex justify-between">
-                            <span className={detail.value > 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                              {detail.name}
-                            </span>
-                            <span className={`font-mono ${detail.value > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {detail.value > 0 ? '+' : ''}{detail.value}分
-                            </span>
-                          </div>
-                        ))}
-                        <div className="flex justify-between pt-0.5 border-t border-white/5 mt-0.5">
-                          <span className="text-neutral-200 font-semibold">總分</span>
-                          <span className="font-mono text-emerald-400 font-semibold">
-                            {Math.round(baseScore + modifier)}分
-                          </span>
-                        </div>
-                      </>
-                    )}
-                    {modifierDetails.length === 0 && modifier === 0 && (
-                      <div className="flex justify-between pt-0.5 border-t border-white/5 mt-0.5">
-                        <span className="text-neutral-200 font-semibold">總分</span>
-                        <span className="font-mono text-emerald-400 font-semibold">
-                          {Math.round(baseScore)}分
-                        </span>
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
               <div className="flex justify-between items-center text-xs">
@@ -2488,12 +2529,10 @@ const App = () => {
                   {/* 配分明細顯示 */}
                   {(scoreObj.buyDetails || scoreObj.sellDetails || scoreObj.baseScore !== undefined) && (
                     <div className="mt-3 pt-3 border-t border-white/5">
-                      <div className="text-[9px] text-neutral-400 mb-1.5">配分明細</div>
                       <div className="text-[9px] space-y-1">
                         {/* 買入配分明細 */}
                         {scoreObj.buy > 0 && (
                           <div>
-                            <div className="text-emerald-400/80 mb-0.5 font-semibold">買入</div>
                             {scoreObj.baseScore !== undefined ? (
                               // FIBO 特殊顯示（基礎分數 + 修正）
                               <>
@@ -2531,9 +2570,7 @@ const App = () => {
                                     <span className="font-mono text-emerald-400">{detail.value}分</span>
                                   </div>
                                 ))
-                              ) : (
-                                <div className="text-neutral-400">無詳細資訊</div>
-                              )
+                              ) : null
                             )}
                           </div>
                         )}
@@ -2541,7 +2578,6 @@ const App = () => {
                         {/* 賣出配分明細 */}
                         {scoreObj.sell > 0 && (
                           <div className={scoreObj.buy > 0 ? 'mt-2 pt-2 border-t border-white/5' : ''}>
-                            <div className="text-rose-400/80 mb-0.5 font-semibold">賣出</div>
                             {scoreObj.sellDetails && scoreObj.sellDetails.length > 0 ? (
                               scoreObj.sellDetails.map((detail, idx) => (
                                 <div key={idx} className="flex justify-between">
@@ -2549,9 +2585,7 @@ const App = () => {
                                   <span className="font-mono text-rose-400">{detail.value}分</span>
                                 </div>
                               ))
-                            ) : (
-                              <div className="text-neutral-400">無詳細資訊</div>
-                            )}
+                            ) : null}
                           </div>
                         )}
                       </div>
