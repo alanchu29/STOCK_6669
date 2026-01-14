@@ -1636,8 +1636,41 @@ const App = () => {
           );
         } else {
           // 6669 顯示完整位階
+          const currentPrice = analysis?.last?.price || 0;
+          const fibo = analysis?.fibo || {};
+          const maxPrice = analysis?.maxPrice || 0;
+          
+          // 判斷當前價格所在區間
+          let currentRange = '';
+          let rangeColor = '#fff';
+          if (fibo.l236 && fibo.l382 && fibo.l500 && fibo.l618) {
+            if (currentPrice > fibo.l236) {
+              currentRange = `> 0.236 (高檔追價區)`;
+              rangeColor = themeColors.l236 || '#fff';
+            } else if (currentPrice > fibo.l382) {
+              currentRange = `0.236-0.382 (強勢接力區)`;
+              rangeColor = themeColors.l382 || '#fff';
+            } else if (currentPrice > fibo.l500) {
+              currentRange = `0.382-0.5 (合理價值區)`;
+              rangeColor = themeColors.l382 || '#fff';
+            } else if (currentPrice >= fibo.l618) {
+              currentRange = `0.5-0.618 (防守觀察區)`;
+              rangeColor = themeColors.l618 || '#fff';
+            } else {
+              currentRange = `< 0.618 (破線區)`;
+              rangeColor = '#ef4444';
+            }
+          }
+          
           return (
             <div className="flex flex-col gap-1 mt-1">
+              {/* 當前區間顯示 */}
+              {currentRange && (
+                <div className="mb-2 pb-2 border-b border-white/10">
+                  <div className="text-[10px] text-neutral-400 mb-0.5">當前區間</div>
+                  <div className="text-xs font-semibold" style={{color: rangeColor}}>{currentRange}</div>
+                </div>
+              )}
               <div className="flex justify-between items-center text-xs">
                 <span style={{color: themeColors.target}}>1.618</span>
                 <span className="font-mono">${analysis && analysis.fibo.ext1618 ? Math.round(analysis.fibo.ext1618) : '--'}</span>
@@ -1667,7 +1700,7 @@ const App = () => {
         : `最高權重 ${fiboWeight}%。依據最近趨勢腿 (Impulse Leg) 計算。0.382 為最佳回檔買點。`, 
       info: is3231
         ? `權重：${fiboWeight}% (短線波段版，20日箱型)\n\n【買入評分 - 階梯式】\n● 價格 > l500：0分 (上半部壓力區)\n● l786 < 價格 <= l500：3分 (下半部安全區)\n● 價格 <= l786：5分 (底部超跌區)\n\n【賣出評分 - 階梯式】\n● 最高價 >= ext1272：5分 (短線噴出)\n● 最高價 >= maxPrice：3分 (創新高)\n● 價格 < maxPrice：0分 (未突破)`
-        : `權重：${fiboWeight}% (最高)\n\n【買入評分 - 線性給分】\n● > 0.236：5-10分 (線性分配)\n● 0.236-0.382：20-25分 (線性，0.382最高25分)\n● 0.382-0.5：15-20分 (線性分配)\n● 0.5-0.618：10-15分 (線性分配)\n● < 0.618 (破線)：0分\n\n【賣出評分】\n● 1.618：獲利滿足 35分\n● 1.272：壓力 28分\n● 破0.618：停損 35分`,
+        : `權重：${fiboWeight}% (最高)\n\n【買入評分 - 線性給分】\n基礎分數（依價格區間線性分配）：\n● > 0.236：5-10分 (線性分配)\n● 0.236-0.382：20-25分 (線性，0.382最高25分)\n● 0.382-0.5：15-20分 (線性分配)\n● 0.5-0.618：10-15分 (線性分配)\n● < 0.618 (破線)：0分\n\nK線型態修正（加減分）：\n● 止跌確認：+10分 (收盤價 > 開盤價 且 > 前日收盤價)\n● 下影線：+8分 (下影線 > 實體 且 最低價 <= 0.382)\n● 量縮：+5分 (成交量 < 5日均量 × 0.7)\n● 殺盤：-10分 (收盤價 < 開盤價 且 實體 > ATR × 1.5)\n\n最終分數 = 基礎分數 + 修正分數（限制在 0-35 分）\n\n【賣出評分】\n● 最高價 >= 1.618：獲利滿足 35分\n● 最高價 >= 1.272：壓力 28分\n● 價格 > 前高：解套賣壓 15分\n● 價格 < 0.618：停損 35分`,
       diag: () => ({ t: "【關鍵決策】權重最高參考指標。", c: "text-blue-400" })
     }
   ];
