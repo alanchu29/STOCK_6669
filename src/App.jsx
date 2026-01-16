@@ -522,7 +522,8 @@ const App = () => {
       legData.forEach(d => { if (d.price < minPrice) minPrice = d.price; });
       
       // 防呆：若高點就是第一天，則往前再找
-      if (maxIndex < 5 && data.length > 200) {
+      // 修正：使用固定窗口期，不依賴 data.length，確保計算穩定
+      if (maxIndex < 5 && data.length >= 200) {
          const extendData = data.slice(-200);
          minPrice = Math.min(...extendData.map(d=>d.price));
       }
@@ -1303,7 +1304,8 @@ const App = () => {
         const histLegData = histRecentData.slice(0, histMaxIndex + 1);
         histLegData.forEach(d => { if (d.price < histMinPrice) histMinPrice = d.price; });
         
-        if (histMaxIndex < 5 && data.length > histIndex + 80) {
+        // 修正：使用固定窗口期，不依賴 data.length，確保歷史分數穩定
+        if (histMaxIndex < 5 && histIndex >= 199) {
           const histExtendData = data.slice(Math.max(0, histIndex - 199), histIndex + 1);
           histMinPrice = Math.min(...histExtendData.map(d=>d.price));
         }
