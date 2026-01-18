@@ -1256,15 +1256,40 @@ const App = () => {
       sellSignal = { text: '破線 (強制停損)', color: 'text-red-600 font-black animate-pulse' };
     }
     
-    // 計算前5天的買入和賣出分數（簡化版，只計算總分）
+    // 計算前5天的買入和賣出分數（使用固定日期，確保歷史分數穩定）
     const historicalScores = [];
-    for (let i = 1; i <= 5; i++) {
-      if (data.length < 120 + i) break; // 確保有足夠的歷史數據
-      const histIndex = data.length - 1 - i;
+    
+    // 獲取當前日期（最後一筆數據的日期）
+    const currentDate = data.length > 0 ? data[data.length - 1].fullDate : null;
+    if (!currentDate) return null;
+    
+    // 找到過去 5 個交易日的固定日期
+    // 使用日期來查找，而不是相對索引，確保同一日期的分數永遠相同
+    const targetDates = [];
+    let tradingDaysFound = 0;
+    for (let i = data.length - 2; i >= 0 && tradingDaysFound < 5; i--) {
+      if (data[i].fullDate && data[i].fullDate !== currentDate) {
+        targetDates.push(data[i].fullDate);
+        tradingDaysFound++;
+      }
+    }
+    
+    // 為每個目標日期計算分數
+    for (const targetDate of targetDates) {
+      // 找到該日期的索引（從後往前找，確保找到最新的數據）
+      let histIndex = -1;
+      for (let i = data.length - 1; i >= 0; i--) {
+        if (data[i].fullDate === targetDate) {
+          histIndex = i;
+          break;
+        }
+      }
+      if (histIndex === -1 || histIndex < 60) continue; // 確保有足夠的歷史數據
+      
       const histLast = data[histIndex];
       const histPrev = data[histIndex - 1];
       
-      if (!histLast || !histPrev) break;
+      if (!histLast || !histPrev) continue;
       
       // 計算歷史當天的實際分數（使用歷史當天的實際數據）
       const histP = histLast.price;
@@ -1337,22 +1362,57 @@ const App = () => {
           else if (histLast.high >= histMaxPrice) histS_Fibo = 3;
           else histS_Fibo = 0;
         } else {
-          // 6669 簡化計算
-          if (histP > histFibo.l236) histB_Fibo = map(histP, histFibo.l236, histMaxPrice, 5, 10);
-          else if (histP > histFibo.l382) histB_Fibo = map(histP, histFibo.l382, histFibo.l236, 20, 25);
-          else if (histP > histFibo.l500) histB_Fibo = map(histP, histFibo.l500, histFibo.l382, 15, 20);
-          else if (histP >= histFibo.l618) histB_Fibo = map(histP, histFibo.l618, histFibo.l500, 10, 15);
-          else histB_Fibo = 0;
-          histB_Fibo = Math.min(35, Math.max(0, histB_Fibo));
+          // === 6669：使用與當天相同的完整計算邏輯 ===
+          // 買入 - 線性給分（與當天相同）
+          let histBaseScore = 0;
+          if (histP > histFibo.l236) {
+            histBaseScore = map(histP, histFibo.l236, histMaxPrice, 5, 10);
+          } else if (histP > histFibo.l382) {
+            histBaseScore = map(histP, histFibo.l382, histFibo.l236, 20, 25);
+          } else if (histP > histFibo.l500) {
+            histBaseScore = map(histP, histFibo.l500, histFibo.l382, 15, 20);
+          } else if (histP >= histFibo.l618) {
+            histBaseScore = map(histP, histFibo.l618, histFibo.l500, 10, 15);
+          } else {
+            histBaseScore = 0; // 破線
+          }
+
+          // K線型態修正（與當天相同）
+          let histModifier = 0;
+          if (histLast.price > histLast.open && histLast.price > histPrev.price) {
+            histModifier += 10; // 止跌確認
+          }
+          const histBodyLen = Math.abs(histLast.price - histLast.open);
+          const histLowerShadow = Math.min(histLast.price, histLast.open) - histLast.low;
+          if (histLowerShadow > histBodyLen && histLast.low <= histFibo.l382) {
+            histModifier += 8; // 下影線
+          }
+          if (histLast.volume < (histLast.volMA5 * 0.7)) {
+            histModifier += 5; // 量縮
+          }
+          if (histLast.price < histLast.open && histBodyLen > (histLast.atr * 1.5)) {
+            histModifier -= 10; // 殺盤
+          }
+
+          histB_Fibo = Math.min(35, Math.max(0, histBaseScore + histModifier));
           
-          if (histLast.high >= histFibo.ext1618) histS_Fibo = 35;
-          else if (histLast.high >= histFibo.ext1272) histS_Fibo = 28;
-          else if (histP > histMaxPrice) histS_Fibo = 15;
-          if (histP < histFibo.l618) histS_Fibo = 35;
+          // 賣出（與當天相同）
+          if (histLast.high >= histFibo.ext1618) histS_Fibo = 35; // 獲利滿足
+          else if (histLast.high >= histFibo.ext1272) histS_Fibo = 28; // 第一壓力
+          else if (histP > histMaxPrice) histS_Fibo = 15; // 解套賣壓
+          if (histP < histFibo.l618) histS_Fibo = 35; // 停損
         }
       }
       
       // 簡化的斜率評分
+      // 修正：確保歷史分數穩定
+      // 當前分數使用：從第 60 個點到最後（data.filter((d, i) => i >= 60)）
+      // 歷史分數應該模擬「歷史當天」的計算：從第 60 個點到歷史當天
+      // 但為了確保穩定性，我們需要確保範圍固定
+      // 問題：當 data.length 增加時，histIndex 也會增加，導致範圍改變
+      // 解決方案：使用固定的起始點（60）和結束點（histIndex），這個範圍在計算時是固定的
+      // 但實際上，如果歷史數據不變，這個範圍應該是穩定的
+      // 唯一可能改變的情況是：歷史數據被修正或更新（這是預期行為）
       const histValidSlopes = data.filter((d, idx) => idx >= 60 && idx <= histIndex).map(d => d.slopeVal);
       const histSPerc = histValidSlopes.length > 0 
         ? (histValidSlopes.sort((a, b) => a - b).filter(s => s < histLast.slopeVal).length / histValidSlopes.length) * 100
