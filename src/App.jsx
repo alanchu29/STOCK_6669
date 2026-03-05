@@ -349,17 +349,13 @@ const App = () => {
       
       const processed = processMarketData(formatted);
       
-      // 再次檢查用戶是否還在該 tab（使用 ref 獲取最新的 activeTabId，避免閉包問題）
-      const finalActiveTabId = activeTabIdRef.current;
-      if (finalActiveTabId === targetTabId) {
-        updateTab(targetTabId, {
-          data: processed,
-          manualPrice: processed.length > 0 ? Math.round(processed[processed.length - 1].price).toString() : '',
-          loading: false
-        });
-      } else {
-        console.log(`[${symbol}] 數據載入完成，但用戶已切換到其他 tab (${finalActiveTabId})，不更新數據`);
-      }
+      // 無論使用者目前停留在哪個 tab，都應該更新目標 tab 的資料並結束 loading。
+      // 否則在請求期間切 tab 時，目標 tab 可能永遠維持 loading=true 而呈現空白/模糊狀態。
+      updateTab(targetTabId, {
+        data: processed,
+        manualPrice: processed.length > 0 ? Math.round(processed[processed.length - 1].price).toString() : '',
+        loading: false
+      });
       
       // 清除 AbortController 引用
       delete abortControllersRef.current[targetTabId];
