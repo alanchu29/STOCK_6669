@@ -1244,9 +1244,9 @@ const App = () => {
       else if (totalBuyScore > 22) buySignal = { text: '分批佈局', color: 'text-cyan-400' };
       else if (totalBuyScore >= 20) buySignal = { text: '中性觀察', color: 'text-blue-400' };
       
-      // 霸王條款：只有在建議買入時（>40分）且斜率持續惡化時才需要「逆勢」警告
+      // 霸王條款：只有在建議買入時（>30分）且斜率持續惡化時才需要「逆勢」警告
       // 如果斜率在改善（負值縮小），代表趨勢可能轉好，不顯示警告
-      if (maSlope < 0 && !isSlopeImproving && totalBuyScore > 40) {
+      if (maSlope < 0 && !isSlopeImproving && totalBuyScore > 30) {
         buySignal = { ...buySignal, text: buySignal.text + ' (逆勢)' };
       }
     }
@@ -1679,6 +1679,70 @@ const App = () => {
       });
     }
     
+    let adjustedBuySignal = buySignal;
+    let tradeTiming = {
+      text: '今日觀望',
+      detail: '訊號不足，先等待更明確時機。',
+      color: 'text-neutral-300',
+      bgClass: 'bg-neutral-500/20 border-neutral-500/40'
+    };
+    if (!is3231 && historicalScores.length > 0) {
+      const prevDayBuyTotal = historicalScores[historicalScores.length - 1]?.buy;
+      const isFreshBuyTrigger = prevDayBuyTotal !== undefined && prevDayBuyTotal <= 30 && totalBuyScore > 30;
+      const isPersistentBuyZone = prevDayBuyTotal !== undefined && prevDayBuyTotal > 30 && totalBuyScore > 30;
+
+      if (isPersistentBuyZone && !isFreshBuyTrigger) {
+        adjustedBuySignal = { text: '續抱（不追高）', color: 'text-sky-300' };
+      }
+
+      const isStrongSell = totalSellScore > 55 || (!is3231 && fibo.l618 && p < fibo.l618);
+      if (isStrongSell) {
+        tradeTiming = {
+          text: '今日該賣',
+          detail: '賣出訊號優先，建議下一交易日開盤先減碼/出清。',
+          color: 'text-rose-300',
+          bgClass: 'bg-rose-500/20 border-rose-500/40'
+        };
+      } else if (isFreshBuyTrigger) {
+        tradeTiming = {
+          text: '今日可買',
+          detail: 'Buy 分數由下往上突破 30，視為新買點，建議下一交易日開盤進場。',
+          color: 'text-emerald-300',
+          bgClass: 'bg-emerald-500/20 border-emerald-500/40'
+        };
+      } else if (isPersistentBuyZone) {
+        tradeTiming = {
+          text: '續抱不追高',
+          detail: '仍在買區但非新突破，先抱不加碼，等下一次新觸發。',
+          color: 'text-sky-300',
+          bgClass: 'bg-sky-500/20 border-sky-500/40'
+        };
+      } else if (totalBuyScore > 22) {
+        tradeTiming = {
+          text: '觀察分批',
+          detail: '接近買區，先觀察，等突破 30 再進場會更精準。',
+          color: 'text-cyan-300',
+          bgClass: 'bg-cyan-500/20 border-cyan-500/40'
+        };
+      }
+    } else if (is3231) {
+      if (totalSellScore > 35) {
+        tradeTiming = {
+          text: '今日該賣',
+          detail: '賣分已達清倉門檻，建議下一交易日優先執行賣出。',
+          color: 'text-rose-300',
+          bgClass: 'bg-rose-500/20 border-rose-500/40'
+        };
+      } else if (totalBuyScore > 34) {
+        tradeTiming = {
+          text: '今日可買',
+          detail: '買分達強力買進門檻，可考慮下一交易日進場。',
+          color: 'text-emerald-300',
+          bgClass: 'bg-emerald-500/20 border-emerald-500/40'
+        };
+      }
+    }
+
     return { 
       last, prev, fibo, sPerc, maxPrice, minPrice, bias, maSlope, isBroken, fiboValid: fiboValid,
       fiboMaxScore: fiboMaxScore, // 傳遞 FIBO 最大分數，用於顯示
@@ -1741,8 +1805,9 @@ const App = () => {
           sellDetails: bbSellDetails
         }
       },
-      buy: { total: totalBuyScore, signal: buySignal },
+      buy: { total: totalBuyScore, signal: adjustedBuySignal },
       sell: { total: totalSellScore, signal: sellSignal },
+      tradeTiming,
       buyTotal: totalBuyScore,
       sellTotal: totalSellScore,
       bbMaxScore: bbMaxScore, // 傳遞布林最大分數，用於顯示
@@ -2215,6 +2280,17 @@ const App = () => {
         </div>
       </div>
 
+      <div className="max-w-7xl mx-auto mb-5">
+        <div className={`rounded-2xl border px-4 py-3 sm:px-5 sm:py-4 ${analysis?.tradeTiming?.bgClass || 'bg-neutral-500/20 border-neutral-500/40'}`}>
+          <div className={`text-sm sm:text-base font-black ${analysis?.tradeTiming?.color || 'text-neutral-300'}`}>
+            交易時機：{analysis?.tradeTiming?.text || '今日觀望'}
+          </div>
+          <div className="text-xs sm:text-sm text-neutral-300 mt-1">
+            {analysis?.tradeTiming?.detail || '訊號不足，先等待更明確時機。'}
+          </div>
+        </div>
+      </div>
+
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6 mb-12 items-stretch transition-all duration-300">
         
         {/* 左側：分數推薦區 (加權版) */}
@@ -2223,7 +2299,7 @@ const App = () => {
             <div className="flex flex-col items-center justify-center shrink-0 w-full sm:w-1/3 text-center mb-4 sm:mb-0">
               <h3 className="text-emerald-500 font-black text-[9px] sm:text-[10px] uppercase tracking-widest mb-2 sm:mb-3">Buy Power</h3>
               <span className="text-5xl sm:text-6xl md:text-7xl font-black leading-none text-emerald-400">{analysis?.buy.total ?? '--'}</span>
-              <div className={`text-sm sm:text-base font-black mt-3 sm:mt-4 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-full ${analysis?.buy?.signal?.color?.includes('emerald') ? 'bg-emerald-500/30 text-emerald-300' : analysis?.buy?.signal?.color?.includes('cyan') ? 'bg-cyan-500/30 text-cyan-300' : analysis?.buy?.signal?.color?.includes('blue') ? 'bg-blue-500/30 text-blue-300' : 'bg-neutral-500/30 text-neutral-300'} shadow-lg`}>
+              <div className={`text-sm sm:text-base font-black mt-3 sm:mt-4 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-full ${analysis?.buy?.signal?.color?.includes('emerald') ? 'bg-emerald-500/30 text-emerald-300' : analysis?.buy?.signal?.color?.includes('cyan') ? 'bg-cyan-500/30 text-cyan-300' : analysis?.buy?.signal?.color?.includes('sky') ? 'bg-sky-500/30 text-sky-300' : analysis?.buy?.signal?.color?.includes('blue') ? 'bg-blue-500/30 text-blue-300' : 'bg-neutral-500/30 text-neutral-300'} shadow-lg`}>
                 {analysis?.buy?.signal?.text ?? '--'}
               </div>
               {/* 前5天買入分數 */}
@@ -2247,7 +2323,7 @@ const App = () => {
                     const otherWeight = 100 - 35 - 20 - 20 - bbWeight;
                     const infoText = stockSymbol === '3231' 
                       ? `【評分標準】\n總分 100 由以下加權計算：\n\n1. 布林通道 (30%)：\n   短線波段策略，線性給分。\n   %B < 0：30分 (超跌滿分)\n   0 <= %B < 0.1：30→25分 (線性)\n   0.1 <= %B < 0.3：25→10分 (線性)\n\n2. KD 隨機指標 (25%)：\n   短線轉折指標。\n   K<20 極度超賣滿分，K>80 直接賣出。\n   無鈍化保護，有賺就跑。\n\n3. RSI 相對強弱 (25%)：\n   短線震盪指標。\n   RSI<30 極度超賣滿分，RSI>75 直接賣出。\n   背離直接滿分。\n\n4. MA 乖離 (10%)：\n   MA20月線：負乖離過大搶反彈，正乖離過大獲利了結。\n\n5. FIBO 位階 (5%)：\n   短線波段版，20日箱型。\n   價格 > l500：0分\n   l786 < 價格 <= l500：3分\n   價格 <= l786：5分\n\n6. MACD 動能 (5%)：\n   動能止跌確認。紅柱收斂即給分，不等待交叉。\n\n(註：斜率與 DMI 不列入評分，專注短線轉折)\n\n【買入分數門檻】\n● >34分：強力買進 (Strong Buy)\n   投入 50% 資金。黃金買點。\n   通常代表「跌破布林下軌 + KD < 20 + RSI 極低」。\n   這是送分題，勝率極高。\n\n● >26分：嘗試進場 (Try Buy)\n   投入 20% 資金。普通買點。\n   對應回測月線或稍微碰到布林下軌。\n   適合先買一張試水溫，若跌更深再加碼。\n\n● <20分：觀望\n   0% 資金。股價在高檔噴出中，千萬別追高。\n\n【霸王條款】\n● 逆勢警告：\n   即使分數 >34（建議買入），但月線斜率 <0 且持續惡化時，\n   會在推薦文字後顯示「(逆勢)」警告。\n   如果斜率在改善（負值縮小），代表趨勢可能轉好，不顯示警告。\n   此設計避免錯過超跌反彈的買點。`
-                      : `【評分標準】\n總分 100 由以下加權計算：\n\n1. FIBO 位階 (35%)：\n   0.382為最高分，各區間內線性分配。\n\n2. 歷史起伏 (20%)：\n   斜率位階低檔 (超跌)，線性給分。\n\n3. 趨勢綜合 (20%)：\n   MA/MACD/DMI 多頭排列。\n\n4. 震盪指標 (20%)：\n   RSI/KD 低檔背離給分。\n\n5. 波動風險 (5%)：\n   觸及布林下軌。\n\n【各階段評語】\n● >30分：強力買進\n   多項指標同步看多，適合積極進場。\n\n● 22~30分：分批佈局\n   趨勢轉強但仍有風險，建議分批買入。\n\n● 20~22分：中性觀察\n   訊號偏弱，建議等待更明確買點。\n\n● <20分：觀望\n   多項指標偏弱，不建議進場。\n\n【霸王條款】\n● 逆勢警告：\n   即使分數 >40（建議買入），但季線斜率 <0 且持續惡化時，\n   會在推薦文字後顯示「(逆勢)」警告。\n   如果斜率在改善（負值縮小），代表趨勢可能轉好，不顯示警告。\n   此設計避免錯過超跌反彈的買點。`;
+                      : `【評分標準】\n總分 100 由以下加權計算：\n\n1. FIBO 位階 (35%)：\n   0.382為最高分，各區間內線性分配。\n\n2. 歷史起伏 (20%)：\n   斜率位階低檔 (超跌)，線性給分。\n\n3. 趨勢綜合 (20%)：\n   MA/MACD/DMI 多頭排列。\n\n4. 震盪指標 (20%)：\n   RSI/KD 低檔背離給分。\n\n5. 波動風險 (5%)：\n   觸及布林下軌。\n\n【各階段評語】\n● >30分：強力買進\n   多項指標同步看多，適合積極進場。\n   僅在「今日由下往上突破 >30」時視為新買點。\n   若連續多日都 >30，訊號顯示為「續抱（不追高）」。\n\n● 22~30分：分批佈局\n   趨勢轉強但仍有風險，建議分批買入。\n\n● 20~22分：中性觀察\n   訊號偏弱，建議等待更明確買點。\n\n● <20分：觀望\n   多項指標偏弱，不建議進場。\n\n【霸王條款】\n● 逆勢警告：\n   即使分數 >30（建議買入），但季線斜率 <0 且持續惡化時，\n   會在推薦文字後顯示「(逆勢)」警告。\n   如果斜率在改善（負值縮小），代表趨勢可能轉好，不顯示警告。\n   此設計避免錯過超跌反彈的買點。`;
                     showInfo(e, 'buy', '買入評分模型', infoText);
                   }}
                 >
