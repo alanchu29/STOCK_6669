@@ -750,12 +750,19 @@ const App = () => {
         s_MA += 3;
         maSellDetails.push({ name: '季線向下', value: 3 });
       }
-      if (bias > 25) {
-        s_MA += 4;
-        maSellDetails.push({ name: '正乖離>25%', value: 4 });
+      // 乖離過熱加強給分（回測優化：原 max7 → max18，賣出評分端最有效的單一修正）
+      if (bias > 30) {
+        s_MA += 15;
+        maSellDetails.push({ name: '正乖離>30% 極度過熱', value: 15 });
+      } else if (bias > 22) {
+        s_MA += 11;
+        maSellDetails.push({ name: '正乖離22-30% 過熱', value: 11 });
       } else if (bias > 15) {
-        s_MA += 2;
-        maSellDetails.push({ name: '正乖離15-25%', value: 2 });
+        s_MA += 7;
+        maSellDetails.push({ name: '正乖離15-22% 警戒', value: 7 });
+      } else if (bias > 10) {
+        s_MA += 4;
+        maSellDetails.push({ name: '正乖離10-15% 偏高', value: 4 });
       }
       if (isBroken) {
         s_MA = Math.max(s_MA, 3);
@@ -763,7 +770,7 @@ const App = () => {
         else maSellDetails.push({ name: '跌破季線', value: 3 });
       }
       b_MA = Math.min(7, b_MA);
-      s_MA = Math.min(7, s_MA);
+      s_MA = Math.min(18, s_MA);
     }
 
     // === KD 評分 ===
@@ -1205,9 +1212,38 @@ const App = () => {
     const b_Vol = b_BB;
     const s_Vol = s_BB;
 
+    // 高檔回落停利分（回測優化：確保「真的該賣時會被通知」的關鍵元件）
+    // 閘門：近 15 日曾過熱(季線乖離>15%) 才啟用，避免一般小回檔誤觸
+    // 觸發：自近 60 日最高收盤回落 ≥10/14/18% 分階給分（上限 30）
+    let s_PeakExit = 0;
+    let peakPullbackPct = 0;
+    let peakExitDetails = [];
+    if (!is3231) {
+      const biasWin = data.slice(-15);
+      const recentMaxBias = biasWin.length > 0 ? Math.max(...biasWin.map(d => {
+        const mv = d.ma60;
+        return mv ? (d.price - mv) / mv * 100 : -Infinity;
+      })) : 0;
+      const peakWin = data.slice(-60);
+      const peakClose = peakWin.length > 0 ? Math.max(...peakWin.map(d => d.price)) : p;
+      peakPullbackPct = peakClose > 0 ? (peakClose - p) / peakClose * 100 : 0;
+      if (recentMaxBias > 15) {
+        if (peakPullbackPct >= 18) {
+          s_PeakExit = 30;
+          peakExitDetails.push({ name: '高檔回落≥18%', value: 30 });
+        } else if (peakPullbackPct >= 14) {
+          s_PeakExit = 21;
+          peakExitDetails.push({ name: '高檔回落≥14%', value: 21 });
+        } else if (peakPullbackPct >= 10) {
+          s_PeakExit = 12;
+          peakExitDetails.push({ name: '高檔回落≥10%', value: 12 });
+        }
+      }
+    }
+
     // 總分
     const totalBuyScore = Math.round(b_Fibo + b_Hist + b_Trend + b_Osc + b_Vol);
-    const totalSellScore = Math.round(s_Fibo + s_Hist + s_Trend + s_Osc + s_Vol);
+    const totalSellScore = Math.min(100, Math.round(s_Fibo + s_Hist + s_Trend + s_Osc + s_Vol + s_PeakExit));
 
     // 計算 maSlope 和 bias（用於顯示和霸王條款判斷，需要在 buySignal 判斷之前計算）
     const maValue = is3231 ? last.ma20 : last.ma60;
@@ -1258,11 +1294,14 @@ const App = () => {
       else if (totalSellScore > 52) sellSignal = { text: '獲利調節 (Trim)', color: 'text-orange-400' };
       // <= 52 分：續抱（預設值）
     } else {
-      // 6669：原版賣出標準
-      if (totalSellScore > 55) sellSignal = { text: '清倉賣出', color: 'text-rose-500 font-bold' };
-      else if (totalSellScore > 47) sellSignal = { text: '調節警戒', color: 'text-orange-400' };
+      // 6669：兩段式賣出（2019~2026 全期回測最佳化，含高檔回落停利分）
+      // ● 真的該賣 / 清倉 = 50：碰斐波延伸壓力、破線、或高檔回落確認的真正危險點
+      //   回測此門檻能在 2026/5-6 等大回落可靠通知，年約 3.9 次，保留 +479% 獲利
+      // ● 波段了結 / 減碼 = 42：提早一階的鎖利提醒（每約 3~4 個月一次）
+      if (totalSellScore > 50) sellSignal = { text: '清倉賣出', color: 'text-rose-500 font-bold' };
+      else if (totalSellScore > 42) sellSignal = { text: '波段了結 (減碼)', color: 'text-orange-400' };
     }
-    
+
     // 6669 的停損判斷（3231 不使用此邏輯）
     if (!is3231 && fibo.l618 && p < fibo.l618) {
       sellSignal = { text: '破線 (強制停損)', color: 'text-red-600 font-black animate-pulse' };
@@ -1475,11 +1514,14 @@ const App = () => {
         }
         
         if (histMaSlope < 0) histS_MA += 3;
-        if (histBias > 25) histS_MA += 4;
-        else if (histBias > 15) histS_MA += 2;
+        // 乖離過熱加強給分（與當日評分一致）
+        if (histBias > 30) histS_MA += 15;
+        else if (histBias > 22) histS_MA += 11;
+        else if (histBias > 15) histS_MA += 7;
+        else if (histBias > 10) histS_MA += 4;
         if (histIsBroken) histS_MA = Math.max(histS_MA, 3);
         histB_MA = Math.min(7, histB_MA);
-        histS_MA = Math.min(7, histS_MA);
+        histS_MA = Math.min(18, histS_MA);
       }
       
       // 簡化的 KD 評分
@@ -1669,8 +1711,26 @@ const App = () => {
       const histB_Vol = histB_BB;
       const histS_Vol = histS_BB;
       
+      // 高檔回落停利分（與當日評分一致）
+      let histS_PeakExit = 0;
+      if (!is3231) {
+        const hBiasSlice = data.slice(Math.max(0, histIndex - 14), histIndex + 1);
+        const hRecentMaxBias = hBiasSlice.length > 0 ? Math.max(...hBiasSlice.map(d => {
+          const mv = d.ma60;
+          return mv ? (d.price - mv) / mv * 100 : -Infinity;
+        })) : 0;
+        const hPeakSlice = data.slice(Math.max(0, histIndex - 59), histIndex + 1);
+        const hPeak = hPeakSlice.length > 0 ? Math.max(...hPeakSlice.map(d => d.price)) : histP;
+        const hPullback = hPeak > 0 ? (hPeak - histP) / hPeak * 100 : 0;
+        if (hRecentMaxBias > 15) {
+          if (hPullback >= 18) histS_PeakExit = 30;
+          else if (hPullback >= 14) histS_PeakExit = 21;
+          else if (hPullback >= 10) histS_PeakExit = 12;
+        }
+      }
+
       const histTotalBuyScore = Math.round(histB_Fibo + histB_Hist + histB_Trend + histB_Osc + histB_Vol);
-      const histTotalSellScore = Math.round(histS_Fibo + histS_Hist + histS_Trend + histS_Osc + histS_Vol);
+      const histTotalSellScore = Math.min(100, Math.round(histS_Fibo + histS_Hist + histS_Trend + histS_Osc + histS_Vol + histS_PeakExit));
       
       historicalScores.push({
         buy: histTotalBuyScore,
@@ -1695,13 +1755,21 @@ const App = () => {
         adjustedBuySignal = { text: '續抱（不追高）', color: 'text-sky-300' };
       }
 
-      const isStrongSell = totalSellScore > 55 || (!is3231 && fibo.l618 && p < fibo.l618);
+      const isStrongSell = totalSellScore > 50 || (!is3231 && fibo.l618 && p < fibo.l618);
+      const isSwingExit = totalSellScore > 42; // 波段了結區（每約 3~4 個月一次）
       if (isStrongSell) {
         tradeTiming = {
-          text: '今日該賣',
-          detail: '賣出訊號優先，建議下一交易日開盤先減碼/出清。',
+          text: '今日該賣 (真的該賣)',
+          detail: '賣分達清倉門檻(>50)、跌破關鍵支撐、或高檔回落確認 — 真正危險點。建議出清「交易部位」鎖利；若有長線核心部位可續抱，破線(l618)則全數退出。',
           color: 'text-rose-300',
           bgClass: 'bg-rose-500/20 border-rose-500/40'
+        };
+      } else if (isSwingExit) {
+        tradeTiming = {
+          text: '波段了結 (分批減碼)',
+          detail: '賣分達了結門檻(>42)，每約 3~4 個月一次的鎖利時機。建議分批減碼(賣 1/3~1/2)、保留核心部位續抱趨勢、勿加碼 — 回測此做法可把長期報酬從 +479% 拉到約 +771%。',
+          color: 'text-orange-300',
+          bgClass: 'bg-orange-500/20 border-orange-500/40'
         };
       } else if (isFreshBuyTrigger) {
         tradeTiming = {
@@ -2398,7 +2466,7 @@ const App = () => {
                     const bbWeight = analysis?.bbMaxScore || 5;
                     const infoText = stockSymbol === '3231'
                       ? `【評分標準】\n總分 100 由以下加權計算：\n\n1. 布林通道 (30%)：\n   短線波段策略，線性給分。\n   %B > 1.0：30分 (突破上軌滿分)\n   0.9 < %B <= 1.0：25→30分 (線性)\n   假突破：20分\n   (移除爆量保護，有賺就跑)\n\n2. KD 隨機指標 (25%)：\n   短線轉折指標。\n   K>80 直接滿分賣出，70 < K <= 80 分批調節。\n   無鈍化保護，有賺就跑。\n\n3. RSI 相對強弱 (25%)：\n   短線震盪指標。\n   RSI>75 直接滿分賣出，60 < RSI <= 75 分批調節。\n   頂背離直接滿分。\n\n4. MA 乖離 (10%)：\n   MA20月線：正乖離過大獲利了結，跌破月線停利/停損。\n\n5. FIBO 壓力 (5%)：\n   短線波段版，20日箱型。\n   最高價 >= ext1272：5分\n   最高價 >= maxPrice：3分\n   價格 < maxPrice：0分\n\n6. MACD 動能 (5%)：\n   動能上攻無力，綠柱收斂即給分。\n\n(註：斜率與 DMI 不列入評分，專注短線轉折)\n\n【賣出分數門檻】\n● >60分：清倉賣出 (Clear Out)\n   100% 全跑。過熱與轉弱共振訊號。\n   這組門檻為「收益優先 + 每月約 3~4 次動作」回測最佳化結果。\n\n● >52分：獲利調節 (Trim)\n   賣出 50% 持股。鎖利降風險。\n   先收現金，再等待下一段更明確訊號。\n\n● ≤52分：續抱\n   不動。尚未達到高勝率賣點。`
-                      : `【評分標準】\n總分 100 由以下加權計算：\n\n1. FIBO 壓力 (35%)：\n   接近 1.618 擴展位滿分。\n\n2. 歷史噴發 (20%)：\n   斜率位階 > 90% (過熱)，線性給分。\n\n3. 趨勢乖離 (20%)：\n   乖離過大或指標轉弱。\n\n4. 震盪過熱 (20%)：\n   RSI/KD 高檔鈍化。\n\n5. 波動極端 (5%)：\n   觸及布林上軌。\n\n【各階段評語】\n● >55分：清倉賣出\n   多項指標同步看空，建議全部出清。\n\n● 47~55分：調節警戒\n   風險上升但仍有上漲空間，建議減碼。\n\n● ≤47分：續抱\n   風險可控，可繼續持有。\n\n【霸王條款】\n● 破線 (強制停損)：\n   價格跌破 FIBO 0.618 位階時，\n   無論分數多少，都應立即停損。`;
+                      : `【評分標準 (回測獲利最佳化)】\n總分由以下加權計算：\n\n1. FIBO 壓力 (35%)：\n   接近 1.618 擴展位滿分。\n\n2. 歷史噴發 (20%)：\n   斜率位階 > 90% (過熱)，線性給分。\n\n3. 趨勢乖離 (MA 強化, 最高18分)：\n   季線正乖離分階給分：\n   >30%:15  >22%:11  >15%:7  >10%:4\n\n4. 震盪過熱 (RSI/KD)：\n   高檔鈍化。\n\n5. 波動極端 (5%)：\n   觸及布林上軌。\n\n【高檔回落停利分 (確保該賣會通知)】\n關鍵新元件：近 15 日曾過熱(乖離>15%)後，\n自近 60 日高點回落時加分(上限30)：\n   回落≥18%:30  ≥14%:21  ≥10%:12\n(只在過熱後回落才計，一般小回檔不誤觸)\n\n【兩段式賣出門檻】\n● >50分：清倉賣出 / 今日該賣\n   斐波壓力、破線、或高檔回落確認的\n   真正危險點。回測能在 2026/5-6 等\n   大回落可靠通知，年約 3.9 次。\n\n● 42~50分：波段了結 / 可減碼\n   每約 3~4 個月一次的鎖利提醒，\n   可減碼了結一趟、勿加碼。\n\n● ≤42分：續抱\n   風險可控，可繼續長抱。\n\n【設計理念】\n6669 為長期強勢股，平時長抱；\n加入『高檔回落停利分』後，真正從\n過熱高檔反轉時分數會被推過門檻，\n確保『該賣時一定收到通知』。\n\n【獲利最大化執行 (重要)】\n回測鐵律：全部出清越勤、總獲利越差。\n● 每次訊號全出清：+479%\n● 分批減碼、保留永久核心：約 +771%\n● 完全長抱(不理訊號)：+1063%\n→ 最佳做法：收到『波段了結』時，\n   只減碼交易部位(1/3~1/2)、保留核心，\n   既能定期鎖利受通知、又逼近長抱獲利。\n   僅在『破線(l618)』時才全數退出。\n\n(以上為 2019~2026 全期回測最佳化結果)`;
                     showInfo(e, 'sell', '賣出評分模型', infoText);
                   }}
                 >

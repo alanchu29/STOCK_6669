@@ -1,4 +1,4 @@
-!pip install yfinance pandas numpy matplotlib ta
+# pip install yfinance pandas numpy matplotlib ta
 
 import yfinance as yf
 import pandas as pd
@@ -447,6 +447,248 @@ def calculate_sell_score(row):
 # 應用評分
 df['Buy_Score'] = df.apply(calculate_buy_score, axis=1)
 df['Sell_Score'] = df.apply(calculate_sell_score, axis=1)
+
+# --- 4. 回測與門檻最佳化（目標每月 3~4 次動作） ---
+def run_backtest_action_based(
+    data,
+    initial_capital=1_000_000,
+    buy_threshold=34,
+    sell_threshold=35,
+    buy_fee_rate=0.001425,
+    sell_fee_rate=0.001425,
+    sell_tax_rate=0.003,
+    action_fraction=0.25,
+):
+    cash = float(initial_capital)
+    shares = 0
+    position_cost = 0.0
+    trade_logs = []
+    closed_trades = []
+    equity_curve = [initial_capital]
+    equity_dates = [data.index[0]]
+
+    for i in range(1, len(data)):
+        signal_row = data.iloc[i - 1]
+        today = data.iloc[i]
+        today_open = today["Open"]
+        today_close = today["Close"]
+        can_trade_today = pd.notna(today_open) and today_open > 0
+
+        buy_signal = (
+            pd.notna(signal_row["Buy_Score"])
+            and pd.notna(signal_row["Sell_Score"])
+            and signal_row["Buy_Score"] >= buy_threshold
+            and signal_row["Sell_Score"] < sell_threshold
+        )
+        sell_signal = (
+            pd.notna(signal_row["Sell_Score"])
+            and signal_row["Sell_Score"] >= sell_threshold
+        )
+
+        if can_trade_today:
+            if sell_signal and shares > 0:
+                qty = max(1, int(shares * action_fraction))
+                qty = min(qty, shares)
+                trade_value = qty * today_open
+                sell_fee = trade_value * sell_fee_rate
+                sell_tax = trade_value * sell_tax_rate
+                net_proceeds = trade_value - sell_fee - sell_tax
+
+                shares_before = shares
+                cost_portion = position_cost * (qty / shares_before) if shares_before > 0 else 0.0
+                pnl = net_proceeds - cost_portion
+                pnl_pct = (pnl / cost_portion) * 100 if cost_portion > 0 else 0.0
+
+                cash += net_proceeds
+                shares -= qty
+                position_cost -= cost_portion
+                if shares == 0:
+                    position_cost = 0.0
+
+                trade_logs.append({
+                    "signal_date": signal_row.name,
+                    "exec_date": today.name,
+                    "action": "SELL",
+                    "price": today_open,
+                    "shares": qty,
+                })
+                closed_trades.append({
+                    "exit_date": today.name,
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                })
+
+            elif buy_signal and cash > 0:
+                budget = min(cash, initial_capital * action_fraction)
+                qty = int(budget / (today_open * (1 + buy_fee_rate)))
+                if qty > 0:
+                    trade_value = qty * today_open
+                    buy_fee = trade_value * buy_fee_rate
+                    total_cost = trade_value + buy_fee
+                    cash -= total_cost
+                    shares += qty
+                    position_cost += total_cost
+                    trade_logs.append({
+                        "signal_date": signal_row.name,
+                        "exec_date": today.name,
+                        "action": "BUY",
+                        "price": today_open,
+                        "shares": qty,
+                    })
+
+        equity = cash + (shares * today_close if pd.notna(today_close) else 0)
+        equity_curve.append(equity)
+        equity_dates.append(today.name)
+
+    if shares > 0 and pd.notna(data.iloc[-1]["Close"]) and data.iloc[-1]["Close"] > 0:
+        final_price = data.iloc[-1]["Close"]
+        trade_value = shares * final_price
+        sell_fee = trade_value * sell_fee_rate
+        sell_tax = trade_value * sell_tax_rate
+        net_proceeds = trade_value - sell_fee - sell_tax
+        pnl = net_proceeds - position_cost
+        pnl_pct = (pnl / position_cost) * 100 if position_cost > 0 else 0.0
+        cash += net_proceeds
+        trade_logs.append({
+            "signal_date": data.index[-1],
+            "exec_date": data.index[-1],
+            "action": "FORCE_SELL",
+            "price": final_price,
+            "shares": shares,
+        })
+        closed_trades.append({
+            "exit_date": data.index[-1],
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+        })
+        shares = 0
+        position_cost = 0.0
+        equity_curve[-1] = cash
+
+    equity_series = pd.Series(equity_curve, index=equity_dates, name="Strategy_Equity_ActionBased")
+    running_max = equity_series.cummax()
+    drawdown = (equity_series / running_max - 1.0) * 100
+    final_equity = float(equity_series.iloc[-1])
+    total_return_pct = (final_equity / initial_capital - 1.0) * 100
+
+    first_close = data["Close"].dropna().iloc[0]
+    last_close = data["Close"].dropna().iloc[-1]
+    benchmark_return_pct = (last_close / first_close - 1.0) * 100
+
+    action_df = pd.DataFrame(trade_logs)
+    action_count = int(action_df[action_df["action"].isin(["BUY", "SELL"])].shape[0]) if not action_df.empty else 0
+    total_trades = len(closed_trades)
+    days_span = max((data.index[-1] - data.index[0]).days, 1)
+    years_span = days_span / 365.25
+    actions_per_month = (action_count / years_span / 12) if years_span > 0 else 0.0
+    trades_per_month = (total_trades / years_span / 12) if years_span > 0 else 0.0
+    win_trades = sum(1 for t in closed_trades if t["pnl"] > 0)
+    win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
+    avg_pnl_pct = float(np.mean([t["pnl_pct"] for t in closed_trades])) if total_trades > 0 else 0.0
+
+    return {
+        "total_return_pct": total_return_pct,
+        "benchmark_return_pct": benchmark_return_pct,
+        "excess_return_pct": total_return_pct - benchmark_return_pct,
+        "max_drawdown_pct": float(drawdown.min()) if len(drawdown) > 0 else 0.0,
+        "total_trades": total_trades,
+        "action_count": action_count,
+        "trades_per_month": trades_per_month,
+        "actions_per_month": actions_per_month,
+        "win_rate_pct": win_rate,
+        "avg_trade_return_pct": avg_pnl_pct,
+    }
+
+
+def optimize_thresholds_for_profit_lowfreq(
+    data,
+    buy_range=range(24, 61, 2),
+    sell_range=range(24, 61, 2),
+    target_actions_min=3.0,
+    target_actions_max=4.0,
+):
+    rows = []
+    for buy_th in buy_range:
+        for sell_th in sell_range:
+            bt = run_backtest_action_based(
+                data,
+                initial_capital=1_000_000,
+                buy_threshold=buy_th,
+                sell_threshold=sell_th,
+                action_fraction=0.25,
+            )
+            rows.append({
+                "buy_threshold": buy_th,
+                "sell_threshold": sell_th,
+                **bt,
+            })
+
+    all_df = pd.DataFrame(rows)
+    target_df = all_df[
+        (all_df["actions_per_month"] >= target_actions_min)
+        & (all_df["actions_per_month"] <= target_actions_max)
+    ].copy()
+
+    for dfx in (all_df, target_df):
+        if dfx.empty:
+            continue
+        dd_abs = dfx["max_drawdown_pct"].abs().replace(0, 1e-9)
+        dfx["profit_score"] = (
+            dfx["total_return_pct"] * 1.1
+            + dfx["excess_return_pct"] * 0.9
+            + dfx["avg_trade_return_pct"] * 0.2
+            - dd_abs * 0.4
+        )
+        dfx.sort_values(
+            ["profit_score", "total_return_pct", "excess_return_pct"],
+            ascending=False,
+            inplace=True,
+        )
+
+    return all_df, target_df
+
+
+all_opt_df, target_opt_df = optimize_thresholds_for_profit_lowfreq(df)
+all_opt_df.to_csv("backtest_3231_thresholds_all.csv", index=False, encoding="utf-8-sig")
+target_opt_df.to_csv("backtest_3231_thresholds_target_3to4_actions_per_month.csv", index=False, encoding="utf-8-sig")
+
+print("\n=== 3231 收益優先 + 低頻率門檻最佳化（每月 3~4 次動作）===")
+if target_opt_df.empty:
+    print("沒有門檻落在每月 3~4 次動作，改列收益前 10 名：")
+    print(all_opt_df.head(10)[[
+        "buy_threshold", "sell_threshold", "total_return_pct", "excess_return_pct",
+        "max_drawdown_pct", "actions_per_month", "action_count", "win_rate_pct"
+    ]])
+    best_row = all_opt_df.iloc[0]
+else:
+    print("符合頻率條件前 10 名：")
+    print(target_opt_df.head(10)[[
+        "buy_threshold", "sell_threshold", "total_return_pct", "excess_return_pct",
+        "max_drawdown_pct", "actions_per_month", "action_count", "win_rate_pct"
+    ]])
+    best_row = target_opt_df.iloc[0]
+
+best_reco = {
+    "buy_threshold": int(best_row["buy_threshold"]),
+    "sell_threshold": int(best_row["sell_threshold"]),
+    "buy_watch_start": max(0, int(best_row["buy_threshold"]) - 8),
+    "sell_watch_start": max(0, int(best_row["sell_threshold"]) - 8),
+    "expected_total_return_pct": float(best_row["total_return_pct"]),
+    "expected_excess_return_pct": float(best_row["excess_return_pct"]),
+    "expected_max_drawdown_pct": float(best_row["max_drawdown_pct"]),
+    "expected_actions_per_month": float(best_row["actions_per_month"]),
+    "expected_action_count": int(best_row["action_count"]),
+}
+pd.DataFrame([best_reco]).to_csv(
+    "backtest_3231_recommended_thresholds_3to4_actions.csv",
+    index=False,
+    encoding="utf-8-sig",
+)
+print(
+    f"\n>>> 3231 建議門檻：Buy >= {best_reco['buy_threshold']}，"
+    f"Sell >= {best_reco['sell_threshold']}，"
+    f"預估每月動作 {best_reco['expected_actions_per_month']:.2f}"
+)
 
 # --- 4. 視覺化繪圖 ---
 # --- 修正後的視覺化繪圖 (Adjusted Thresholds) ---
