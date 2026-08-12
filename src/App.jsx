@@ -1668,7 +1668,8 @@ const App = () => {
           avgRet: costTot ? pnlTot / costTot * 100 : 0,
           avgLots: rounds.length ? rounds.reduce((a, r) => a + r.lots, 0) / rounds.length : 0,
           avgDays: rounds.length ? rounds.reduce((a, r) => a + r.days, 0) / rounds.length : 0,
-          maxLots: rounds.length ? Math.max(...rounds.map(r => r.lots)) : 0
+          maxLots: rounds.length ? Math.max(...rounds.map(r => r.lots)) : 0,
+          spanFrom: data[START]?.fullDate ?? '--'
         },
         recent: rounds.slice(-6).reverse(),
         trend: data.slice(-10).map((d, j) => {
@@ -2194,28 +2195,21 @@ const App = () => {
       if (t.isSellToday) {
         tradeTiming = {
           text: '★ 今日全部清空',
-          detail: `賣分 ${t.sellScore.toFixed(1)} 已達 ${TWO_SELL_LV} 分門檻，手上持股全部出清、不分批。`
-            + `全期 ${t.stats.rounds} 輪平倉、勝率 ${t.stats.winRate.toFixed(0)}%、每輪平均 ${t.stats.avgRet >= 0 ? '+' : ''}${t.stats.avgRet.toFixed(2)}%。`
-            + (t.ref.lots > 0 ? `　參考持倉 ${t.ref.lots} 張、均價 ${t.ref.avg.toFixed(1)}、浮動 ${t.ref.floatPct >= 0 ? '+' : ''}${t.ref.floatPct.toFixed(2)}%。` : ''),
+          detail: `賣分 ${t.sellScore.toFixed(1)} 已達 ${TWO_SELL_LV} 分門檻，手上持股全部出清、不分批、不留核心。`,
           color: 'text-rose-300',
           bgClass: 'bg-rose-500/20 border-rose-500/40'
         };
       } else if (t.targetLots >= 1) {
         tradeTiming = {
           text: `★ 應持有 ${t.targetLots} 張`,
-          detail: `買分 ${t.buyScore.toFixed(1)}（區間 ${TWO_BUY_LV + (t.targetLots - 1) * TWO_STEP}~${t.targetLots >= 10 ? 100 : TWO_BUY_LV + t.targetLots * TWO_STEP - 1} 分）對應應持有 ${t.targetLots} 張。`
-            + `手上不足就補足差額 —— 這是下限，買分之後下降不需要賣。`
-            + `　下一階需買分 ≥ ${t.needForNext}（還差 ${t.gapToNext.toFixed(1)} 分）。`
-            + `　距清空門檻還差 ${t.gapToSell.toFixed(1)} 分。`,
+          detail: `買分 ${t.buyScore.toFixed(1)}（區間 ${TWO_BUY_LV + (t.targetLots - 1) * TWO_STEP}~${t.targetLots >= 10 ? 100 : TWO_BUY_LV + t.targetLots * TWO_STEP - 1} 分）對應應持有 ${t.targetLots} 張，手上不足就補足差額。`,
           color: 'text-emerald-300',
           bgClass: 'bg-emerald-500/20 border-emerald-500/40'
         };
       } else {
         tradeTiming = {
           text: '觀察（未達買區、未達清空）',
-          detail: `買分 ${t.buyScore.toFixed(1)}（需 ≥ ${TWO_BUY_LV} 才有第 1 張，還差 ${t.gapToNext.toFixed(1)} 分）；`
-            + `賣分 ${t.sellScore.toFixed(1)}（需 ≥ ${TWO_SELL_LV} 才清空，還差 ${t.gapToSell.toFixed(1)} 分）。`
-            + `已持有的張數繼續抱著等賣訊，不因買分下降而賣出。`,
+          detail: `買分未達 ${TWO_BUY_LV} 分、賣分未達 ${TWO_SELL_LV} 分。已持有的張數繼續抱著等賣訊，不因買分下降而賣出。`,
           color: 'text-neutral-300',
           bgClass: 'bg-neutral-500/20 border-neutral-500/40'
         };
@@ -2409,11 +2403,89 @@ const App = () => {
     setActiveInfo({ type, title, content });
   };
 
+  // 2301 策略統計與歷史（由主卡的 ⓘ 開啟，不占主頁空間）
+  const TWO_STATS_TEXT = (T) => {
+    const st = T.stats;
+    const pad = (s, n) => String(s).padEnd(n, '　');
+    const trendRows = T.trend.map(t =>
+      `  ${t.date}  收 ${String(Math.round(t.price)).padStart(5)}` +
+      `　買分 ${t.buy.toFixed(0).padStart(3)} → ${t.tgt} 張` +
+      `　賣分 ${t.sell.toFixed(0).padStart(3)}${t.sell >= T.thresholds.TWO_SELL_LV ? ' ★清空' : ''}`
+    ).join('\n');
+    const roundRows = T.recent.map(r =>
+      `  ${r.entry} → ${r.exit}　${String(r.lots).padStart(2)} 張` +
+      `　均價 ${r.avg.toFixed(1)} → ${r.exitPx.toFixed(1)}` +
+      `　${r.ret >= 0 ? '+' : ''}${r.ret.toFixed(2)}%　${r.days} 日`
+    ).join('\n');
+    return `【今日狀態】
+  買分 ${T.buyScore.toFixed(1)} → 應持有 ${T.targetLots} 張
+  賣分 ${T.sellScore.toFixed(1)} / ${T.thresholds.TWO_SELL_LV}${T.isSellToday ? '　★ 已達清空門檻' : `（還差 ${T.gapToSell.toFixed(1)} 分）`}
+  ${T.isSellToday ? '' : `下一階需買分 ≥ ${T.needForNext}（還差 ${T.gapToNext.toFixed(1)} 分）`}
+
+【全期統計】統計期間 ${st.spanFrom} 起
+  買進動作　${st.buyPerYear.toFixed(1)} 次/年
+  出清動作　${st.sellPerYear.toFixed(1)} 次/年
+  合計　　　${st.actPerYear.toFixed(1)} 動作/年（每月 ${(st.actPerYear / 12).toFixed(1)} 次）
+  平倉輪數　${st.rounds} 輪
+  勝率　　　${st.winRate.toFixed(0)}%（${st.wins} 勝 / ${st.rounds - st.wins} 敗）
+  每輪報酬　${st.avgRet >= 0 ? '+' : ''}${st.avgRet.toFixed(2)}%（成本加權）
+  平均張數　${st.avgLots.toFixed(1)} 張（最多 ${st.maxLots} 張）
+  平均持有　${st.avgDays.toFixed(0)} 個交易日
+
+【⚠ 統計期間的重要說明】
+App 使用 Yahoo 提供的全部歷史（2301 從 2000 年起），
+但這 25 項因素是用 2015 年之後的資料篩選出來的。
+2000~2014 對這組因素而言是「樣本外」，實際表現差很多：
+
+  期間　　　　輪數　每輪報酬　勝率　最差單輪
+  2000~2009　 41　 +1.50%　 80%　 −54.22%
+  2010~2014　 13　 +0.83%　 85%　 −13.25%
+  2015~2020　 17　 +2.78%　 82%　 −12.07%
+  2021~2026　 28　+13.75%　 93%　  −8.54%
+
+→ 這套策略在 2000~2014 的盤整年代幾乎不賺錢
+  （每輪 +0.8~1.5%，扣掉 0.585% 交易成本後接近零），
+  2008 年有一輪滿倉 10 張虧損 −54.22%。
+  獲利幾乎全部來自 2021 之後。
+→ 合理的長期預期請用 +1~3%/輪，不要用近年的 +13.75%。
+→ 但 26 年全期仍為正（+7.50%/輪、83% 勝率），策略不會爆掉，
+  只是在盤整年代賺不到錢。
+
+【驗證（2015-07 ~ 2026-08 窗口，含息還原）】
+  隨機化檢定 600 次：實際每輪 +11.96% vs 隨機平均 +2.14%
+    （600 次最大僅 +4.25%）→ p = 0.0000
+  兩期都正：前半 +5.45%、後半 +13.13%
+  高原：鄰域 36 組（買2~8 × 階梯8~12 × 賣77~83）每輪最低 +9.47%
+  容錯：漏掉 50% 買訊，年損益僅 −10%
+    （因每日重算目標張數，不依賴任何歷史狀態）
+  訊號價值拆解（頻率對等）：
+    進場時機貢獻 +12.56pp（p=0.0000）
+    出場時機貢獻 +8.80pp（p=0.0000）
+
+【未還原股價的影響】
+App 抓的是未還原股價（含除息缺口），我的回測用還原股價。
+同一 2015 窗口：未還原 45 輪、每輪 +11.75%、勝率 89%、最差 −12.07%；
+還原 50 輪、每輪 +11.96%、勝率 92%、最差 −5.84%。
+策略仍有效，但單輪最壞會比回測數字難看。
+
+【近 10 日】
+${trendRows}
+
+【近期平倉（模型推演，假設完全照訊號執行）】
+${roundRows}
+
+【停用條件】
+  不可重新最佳化門檻（4 / 80 / +10 固定）—— 逐年重調實測會失效
+  連續 2 個完整年度虧損 → 停用
+  單輪虧損超過 −15% → 人工檢視
+  每年只做一次檢核，只決定是否繼續，不改參數`;
+  };
+
   const renderScoreBar = (label, score, maxScore, colorClass) => (
     <div className="mb-1.5 sm:mb-2">
       <div className="flex justify-between text-[9px] sm:text-[10px] mb-0.5 sm:mb-1 text-neutral-400">
         <span className="truncate pr-2">{label}</span>
-        <span className="font-mono shrink-0">{Math.round(score)} / {maxScore}</span>
+        <span className="font-mono shrink-0">{Math.round(score)} / {Math.round(maxScore)}</span>
       </div>
       <div className="w-full bg-neutral-800 h-1 sm:h-1.5 rounded-full overflow-hidden">
         <div className={`h-full ${colorClass} transition-all duration-500`} style={{width: `${maxScore > 0 ? Math.min(100, (score / maxScore) * 100) : 0}%`}}></div>
@@ -2944,174 +3016,98 @@ const App = () => {
           </div>
         )}
 
-        {/* ── 2301：張數計算 + 階梯對照表 ── */}
+        {/* ── 2301：主卡只留今日決策；統計與因素明細在 ⓘ 彈窗 ── */}
         {is2301 && analysis?.twoSignal && (() => {
           const T = analysis.twoSignal;
           const held = lots2301 === '' ? null : Math.max(0, parseInt(lots2301, 10) || 0);
           const toBuy = held === null ? null : Math.max(0, T.targetLots - held);
           const px = analysis.last.price;
+          const cur = T.ladder.find(L => L.hit);
           return (
-            <div className="rounded-2xl border border-neutral-700 bg-neutral-900/70 px-4 py-3 sm:px-5 sm:py-4">
-              {/* 上排：應持有 / 手動輸入 / 該補幾張 */}
-              <div className="flex flex-wrap items-center gap-3 sm:gap-5 mb-3">
-                <div className="flex flex-col">
+            <div className="rounded-2xl border border-neutral-700 bg-neutral-900/70 px-4 py-3 sm:px-5 sm:py-3.5">
+              {/* 第 1 行：決策 */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <div className="flex items-baseline gap-2">
                   <span className="text-[10px] text-neutral-500 uppercase tracking-wider">應持有</span>
-                  <span className={`text-3xl sm:text-4xl font-black leading-none ${T.targetLots > 0 ? 'text-emerald-400' : 'text-neutral-500'}`}>
-                    {T.targetLots}<span className="text-sm font-bold text-neutral-500 ml-1">張</span>
+                  <span className={`text-3xl font-black leading-none ${T.targetLots > 0 ? 'text-emerald-400' : 'text-neutral-500'}`}>
+                    {T.targetLots}
                   </span>
+                  <span className="text-xs font-bold text-neutral-500">張</span>
                 </div>
-                <div className="text-neutral-600 text-2xl font-thin hidden sm:block">−</div>
-                <div className="flex flex-col">
-                  <span className="text-[10px] text-neutral-500 uppercase tracking-wider">你手上有</span>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => setLots2301(String(Math.max(0, (held ?? 0) - 1)))}
-                      className="w-7 h-7 rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-300 font-bold hover:bg-neutral-700">−</button>
-                    <input type="number" min="0" value={lots2301} placeholder="0"
-                      onChange={(e) => setLots2301(e.target.value)}
-                      className="w-14 text-center bg-neutral-800 border border-neutral-700 rounded-lg py-1 text-lg font-black text-neutral-100 font-mono focus:outline-none focus:border-emerald-500" />
-                    <button onClick={() => setLots2301(String((held ?? 0) + 1))}
-                      className="w-7 h-7 rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-300 font-bold hover:bg-neutral-700">+</button>
-                  </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-neutral-500">手上</span>
+                  <button onClick={() => setLots2301(String(Math.max(0, (held ?? 0) - 1)))}
+                    className="w-6 h-6 rounded bg-neutral-800 border border-neutral-700 text-neutral-400 text-xs font-bold hover:bg-neutral-700">−</button>
+                  <input type="number" min="0" value={lots2301} placeholder="0"
+                    onChange={(e) => setLots2301(e.target.value)}
+                    className="w-11 text-center bg-neutral-800 border border-neutral-700 rounded py-0.5 text-base font-black text-neutral-100 font-mono focus:outline-none focus:border-emerald-500" />
+                  <button onClick={() => setLots2301(String((held ?? 0) + 1))}
+                    className="w-6 h-6 rounded bg-neutral-800 border border-neutral-700 text-neutral-400 text-xs font-bold hover:bg-neutral-700">+</button>
                 </div>
-                <div className="text-neutral-600 text-2xl font-thin hidden sm:block">=</div>
-                <div className="flex flex-col">
-                  <span className="text-[10px] text-neutral-500 uppercase tracking-wider">
-                    {T.isSellToday ? '今日動作' : '該補'}
+                <div className="text-neutral-700 hidden sm:block">→</div>
+                {T.isSellToday ? (
+                  <span className="text-xl font-black text-rose-400">
+                    全部清空{held ? ` ${held} 張` : ''}
                   </span>
-                  {T.isSellToday ? (
-                    <span className="text-2xl sm:text-3xl font-black leading-none text-rose-400">
-                      全部清空{held ? ` ${held} 張` : ''}
-                    </span>
-                  ) : (
-                    <span className={`text-3xl sm:text-4xl font-black leading-none ${toBuy ? 'text-emerald-400' : 'text-neutral-500'}`}>
-                      {toBuy === null ? '--' : toBuy}
-                      <span className="text-sm font-bold text-neutral-500 ml-1">張</span>
-                      {toBuy > 0 && (
-                        <span className="text-[11px] font-mono text-neutral-400 ml-2">
-                          ≈ ${Math.round(toBuy * px * 1000 * 1.001425).toLocaleString()}
-                        </span>
-                      )}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="text-[10px] sm:text-[11px] text-amber-300/80 mb-3 leading-relaxed border-l-2 border-amber-500/40 pl-2">
-                「應持有」是<strong>下限</strong>，不是目標值。買分之後下降<strong>不需要賣</strong> ——
-                只有賣分 ≥ {T.thresholds.TWO_SELL_LV} 才全部清空。手上張數不會被記錄，每次自行輸入即可。
+                ) : (
+                  <span className={`text-xl font-black ${toBuy ? 'text-emerald-400' : 'text-neutral-500'}`}>
+                    {toBuy === null ? '補 -- 張' : toBuy > 0 ? `補 ${toBuy} 張` : '不需動作'}
+                    {toBuy > 0 && (
+                      <span className="text-[10px] font-mono text-neutral-500 ml-1.5">
+                        ≈ ${Math.round(toBuy * px * 1000 * 1.001425).toLocaleString()}
+                      </span>
+                    )}
+                  </span>
+                )}
+                <button
+                  className="ml-auto p-1 text-neutral-600 hover:text-white shrink-0"
+                  title="策略統計與歷史"
+                  onClick={(e) => showInfo(e, 'buy', '2301 策略統計與歷史', TWO_STATS_TEXT(T))}
+                >
+                  <Info size={14} />
+                </button>
               </div>
 
-              {/* 階梯對照表 */}
-              <div className="flex items-baseline justify-between mb-2">
-                <div className="text-[11px] sm:text-xs font-black text-neutral-400 uppercase tracking-wider">
-                  買分 → 應持有張數
-                </div>
-                <div className="text-[10px] text-neutral-500 font-mono">
-                  公式 floor((買分 − {T.thresholds.TWO_BUY_LV}) / {T.thresholds.TWO_STEP}) + 1
-                </div>
+              {/* 第 2 行：距離 */}
+              <div className="text-[10px] sm:text-[11px] text-neutral-500 font-mono mt-2 flex flex-wrap gap-x-4 gap-y-0.5">
+                <span>買分 {T.buyScore.toFixed(1)}{cur ? `（${cur.from}~${cur.to}）` : `（&lt; ${T.thresholds.TWO_BUY_LV}）`}</span>
+                {!T.isSellToday && <span>下一階 ≥ {T.needForNext} 分（差 {T.gapToNext.toFixed(1)}）</span>}
+                <span className={T.isSellToday ? 'text-rose-400 font-bold' : ''}>
+                  賣分 {T.sellScore.toFixed(1)} / {T.thresholds.TWO_SELL_LV}
+                  {!T.isSellToday && `（差 ${T.gapToSell.toFixed(1)}）`}
+                </span>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
-                <div className={`rounded-lg px-2 py-1.5 text-center border ${T.targetLots === 0 ? 'bg-neutral-700/40 border-neutral-500' : 'bg-neutral-800/40 border-neutral-700/50'}`}>
-                  <div className="text-[10px] text-neutral-500 font-mono">&lt; {T.thresholds.TWO_BUY_LV}</div>
-                  <div className={`text-sm font-black ${T.targetLots === 0 ? 'text-neutral-200' : 'text-neutral-600'}`}>0 張</div>
-                </div>
-                {T.ladder.map(L => (
-                  <div key={L.lots}
-                    className={`rounded-lg px-2 py-1.5 text-center border ${
-                      L.hit ? 'bg-emerald-500/25 border-emerald-500 ring-1 ring-emerald-400'
-                            : L.cleared ? 'bg-emerald-500/8 border-emerald-500/30'
-                            : 'bg-neutral-800/40 border-neutral-700/50'}`}>
-                    <div className="text-[10px] text-neutral-500 font-mono">{L.from}~{L.to}</div>
-                    <div className={`text-sm font-black ${L.hit ? 'text-emerald-300' : L.cleared ? 'text-emerald-500/70' : 'text-neutral-600'}`}>
-                      {L.lots} 張
+
+              {/* 第 3 行：警語 */}
+              <div className="text-[10px] text-amber-300/70 mt-1.5">
+                「應持有」是下限 —— 買分下降不用賣，只有賣分 ≥ {T.thresholds.TWO_SELL_LV} 才清空。
+              </div>
+
+              {/* 唯一保留的摺疊：張數規則（看懂一次就不用再看） */}
+              <details className="mt-2 group">
+                <summary className="cursor-pointer list-none text-[11px] text-neutral-500 hover:text-neutral-300 select-none">
+                  <span className="inline-block transition-transform group-open:rotate-90">▸</span> 張數規則
+                  <span className="text-neutral-700 ml-1.5 font-mono">floor((買分 − {T.thresholds.TWO_BUY_LV}) / {T.thresholds.TWO_STEP}) + 1</span>
+                </summary>
+                <div className="mt-2 grid grid-cols-3 sm:grid-cols-6 gap-1 text-[10px] font-mono">
+                  <div className={`rounded px-1.5 py-1 text-center border ${T.targetLots === 0 ? 'bg-neutral-700/40 border-neutral-500' : 'bg-neutral-800/30 border-neutral-800'}`}>
+                    <span className="text-neutral-500">&lt;{T.thresholds.TWO_BUY_LV}</span>
+                    <span className={`ml-1 font-bold ${T.targetLots === 0 ? 'text-neutral-200' : 'text-neutral-600'}`}>0張</span>
+                  </div>
+                  {T.ladder.map(L => (
+                    <div key={L.lots}
+                      className={`rounded px-1.5 py-1 text-center border ${
+                        L.hit ? 'bg-emerald-500/25 border-emerald-500'
+                              : L.cleared ? 'bg-emerald-500/8 border-emerald-500/25'
+                              : 'bg-neutral-800/30 border-neutral-800'}`}>
+                      <span className="text-neutral-500">{L.from}~{L.to}</span>
+                      <span className={`ml-1 font-bold ${L.hit ? 'text-emerald-300' : L.cleared ? 'text-emerald-600' : 'text-neutral-600'}`}>
+                        {L.lots}張
+                      </span>
                     </div>
-                    <div className="text-[9px] text-neutral-600 font-mono">{L.days}天</div>
-                  </div>
-                ))}
-              </div>
-              <div className="text-[10px] text-neutral-500 mt-2 leading-relaxed">
-                今日買分 <strong className="text-neutral-300">{T.buyScore.toFixed(1)}</strong>
-                {!T.isSellToday && <> ；下一階需 ≥ <strong className="text-neutral-300">{T.needForNext}</strong> 分（還差 {T.gapToNext.toFixed(1)} 分）</>}
-                　賣分 <strong className="text-neutral-300">{T.sellScore.toFixed(1)}</strong> / {T.thresholds.TWO_SELL_LV}
-                {!T.isSellToday && <>（還差 {T.gapToSell.toFixed(1)} 分）</>}
-                　「天數」為該區間歷史出現的交易日數
-              </div>
-
-              {/* 近 10 日買賣分與應持有 */}
-              <div className="mt-3 pt-3 border-t border-white/10">
-                <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1.5">近 10 日</div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[10px] sm:text-[11px] font-mono">
-                    <tbody>
-                      <tr className="text-neutral-500">
-                        <td className="pr-2 text-neutral-600">日期</td>
-                        {T.trend.map(t => <td key={t.date} className="px-1 text-center">{t.date?.slice(5)}</td>)}
-                      </tr>
-                      <tr className="text-neutral-400">
-                        <td className="pr-2 text-neutral-600">收盤</td>
-                        {T.trend.map(t => <td key={t.date} className="px-1 text-center">{Math.round(t.price)}</td>)}
-                      </tr>
-                      <tr className="text-emerald-400">
-                        <td className="pr-2 text-neutral-600">買分</td>
-                        {T.trend.map(t => <td key={t.date} className="px-1 text-center">{t.buy.toFixed(0)}</td>)}
-                      </tr>
-                      <tr className="text-emerald-300 font-bold">
-                        <td className="pr-2 text-neutral-600">應持有</td>
-                        {T.trend.map(t => <td key={t.date} className="px-1 text-center">{t.tgt}</td>)}
-                      </tr>
-                      <tr className="text-rose-400">
-                        <td className="pr-2 text-neutral-600">賣分</td>
-                        {T.trend.map(t => (
-                          <td key={t.date} className={`px-1 text-center ${t.sell >= T.thresholds.TWO_SELL_LV ? 'bg-rose-500/25 font-bold rounded' : ''}`}>
-                            {t.sell.toFixed(0)}
-                          </td>
-                        ))}
-                      </tr>
-                    </tbody>
-                  </table>
+                  ))}
                 </div>
-              </div>
-
-              {/* 全期統計 + 參考持倉 */}
-              <div className="mt-3 pt-3 border-t border-white/10 flex flex-wrap gap-x-4 gap-y-1 text-[10px] sm:text-[11px] text-neutral-400 font-mono">
-                <span>全期：買 {T.stats.buyPerYear.toFixed(1)} 次/年、賣 {T.stats.sellPerYear.toFixed(1)} 次/年
-                  <span className="text-neutral-600">（共 {T.stats.actPerYear.toFixed(1)} 動作/年）</span>
-                </span>
-                <span>勝率 <strong className="text-emerald-400">{T.stats.winRate.toFixed(0)}%</strong>
-                  <span className="text-neutral-600">（{T.stats.wins}/{T.stats.rounds} 輪）</span>
-                </span>
-                <span>每輪 <strong className={T.stats.avgRet >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                  {T.stats.avgRet >= 0 ? '+' : ''}{T.stats.avgRet.toFixed(2)}%</strong></span>
-                <span>平均 {T.stats.avgLots.toFixed(1)} 張 / {T.stats.avgDays.toFixed(0)} 日
-                  <span className="text-neutral-600">（最多 {T.stats.maxLots} 張）</span>
-                </span>
-              </div>
-              {T.ref.lots > 0 && (
-                <div className="mt-1.5 text-[10px] sm:text-[11px] text-neutral-500 font-mono">
-                  參考持倉（假設完全照訊號執行，僅供對照）：{T.ref.lots} 張、均價 {T.ref.avg.toFixed(1)}、
-                  成本 ${Math.round(T.ref.cost).toLocaleString()}、
-                  浮動 <strong className={T.ref.floatPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                    {T.ref.floatPct >= 0 ? '+' : ''}{T.ref.floatPct.toFixed(2)}%</strong>、
-                  {T.ref.entryDate} 進場（{T.ref.holdDays} 個交易日）
-                </div>
-              )}
-              {T.recent.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-white/10">
-                  <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1">近期平倉</div>
-                  <div className="space-y-0.5">
-                    {T.recent.map((r, i) => (
-                      <div key={i} className="flex flex-wrap gap-x-3 text-[10px] sm:text-[11px] font-mono text-neutral-400">
-                        <span className="text-neutral-500">{r.entry} → {r.exit}</span>
-                        <span>{r.lots} 張</span>
-                        <span className="text-neutral-500">均價 {r.avg.toFixed(1)} → {r.exitPx.toFixed(1)}</span>
-                        <span className={r.ret >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-                          {r.ret >= 0 ? '+' : ''}{r.ret.toFixed(2)}%
-                        </span>
-                        <span className="text-neutral-600">{r.days} 日</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              </details>
             </div>
           );
         })()}
@@ -3152,7 +3148,11 @@ const App = () => {
                     const infoText = stockSymbol === '3231' 
                       ? `【評分標準】\n總分 100 由以下加權計算：\n\n1. 布林通道 (30%)：\n   短線波段策略，線性給分。\n   %B < 0：30分 (超跌滿分)\n   0 <= %B < 0.1：30→25分 (線性)\n   0.1 <= %B < 0.3：25→10分 (線性)\n\n2. KD 隨機指標 (25%)：\n   短線轉折指標。\n   K<20 極度超賣滿分，K>80 直接賣出。\n   無鈍化保護，有賺就跑。\n\n3. RSI 相對強弱 (25%)：\n   短線震盪指標。\n   RSI<30 極度超賣滿分，RSI>75 直接賣出。\n   背離直接滿分。\n\n4. MA 乖離 (10%)：\n   MA20月線：負乖離過大搶反彈，正乖離過大獲利了結。\n\n5. FIBO 位階 (5%)：\n   短線波段版，20日箱型。\n   價格 > l500：0分\n   l786 < 價格 <= l500：3分\n   價格 <= l786：5分\n\n6. MACD 動能 (5%)：\n   動能止跌確認。紅柱收斂即給分，不等待交叉。\n\n(註：斜率與 DMI 不列入評分，專注短線轉折)\n\n【買入分數門檻】\n● >38分：強力買進 (Strong Buy)\n   投入 50% 資金。高勝率新買點。\n   這組門檻為「收益優先 + 每月約 3~4 次動作」回測最佳化結果。\n\n● >30分：嘗試進場 (Try Buy)\n   投入 20% 資金。觀察轉強區。\n   適合先試單，待結構確認再加碼。\n\n● <20分：觀望\n   0% 資金。訊號不足，不建議進場。\n\n【霸王條款】\n● 逆勢警告：\n   即使分數 >38（建議買入），但月線斜率 <0 且持續惡化時，\n   會在推薦文字後顯示「(逆勢)」警告。\n   如果斜率在改善（負值縮小），代表趨勢可能轉好，不顯示警告。`
                       : stockSymbol === '2301'
-                      ? `【2301 買進評分 — 14 項等權，每項 7.14 分】\n\n族群權重：\n● 均線負乖離 35.7%（5 項）：MA120／MA60／MA20／MA10／MA5 負乖離\n● 自高點回落 21.4%（3 項）：自 60／20／10 日高點回落\n● 跌幅動能 21.4%（3 項）：近 5／3／1 日跌幅\n● 震盪超賣 21.4%（3 項）：K9 低檔／K5 低檔／RSI5 低檔\n\n【買進規則 — 目標持倉制】\n應持有張數 = floor((今日買分 − 4) / 10) + 1，買分 < 4 → 0 張\n\n買分 <4 → 0 張｜4~13 → 1 張｜14~23 → 2 張｜24~33 → 3 張\n34~43 → 4 張｜44~53 → 5 張｜54~63 → 6 張｜64~73 → 7 張\n74~83 → 8 張｜84~93 → 9 張｜94~100 → 10 張\n\n手上不足就補足差額。這是「下限」而非目標值 ——\n買分之後下降不需要賣，只有賣分 ≥ 80 才全部清空。\n\n【為什麼是這 14 項】\n以 2301 自身資料篩選「訓練期／測試期兩期同向為正」的因素，\n25 個候選中有 14 個通過。最強的是 MA120 負乖離\n（邊際 +5.958pp，訓練 +4.354／測試 +14.162）。\n\n實測優於直接沿用 1402 的清單（超額 +7.3pp vs +6.8pp），\n並剔除了兩個對 2301 有害的因素：\n● MACD 紅柱收斂 −1.48pp（在 1402 上有效，在 2301 上有害）\n● 箱型低位 −1.54pp\n以及測試期轉負的 RSI14／RSI21 低檔。\n\n【為什麼是等權而非最佳化權重】\n對 5562 組買方權重做系統性搜尋（全部單因素 + 全部雙因素 +\n全部三因素 + 等權 + 4000 組隨機 Dirichlet），以「訓練期選權重\n→ 測試期驗證」檢驗：\n● 訓練期第一名 → 測試期排名 3592/5562\n● 各共識權重 K=1~500 的測試期表現全部落在 PR 50 附近\n● NNLS 迴歸權重 → 測試期 +0.670pp ＜ 等權 +0.814pp\n→ 買方權重最佳化無效，任何合理的低接組合都差不多，故採族群等權。\n\n【驗證（2015-07 ~ 2026-08，11.1 年，含息還原）】\n● 買 14.3 次/年、賣 4.5 次/年 → 18.8 動作/年（每月 1.6 次）\n● 每輪報酬 +11.96%、勝率 92%（46 勝/4 敗）\n● 賺賠比 2.49、獲利因子 28.62、最差單輪 −5.84%\n● 平均持有 49 日（中位 16、最長 253）、帳面最差 −27%\n● 平均綁住 160 萬、最壞需備 272 萬（10 張）\n● 年損益 62 萬、資金效率 38.7%／年\n● 獲利年 11/12（2024 唯一虧損年）\n● 兩期都正：前半 +5.45%、後半 +13.13%\n● 隨機化 600 次 p = 0.0000\n  （實際 +11.96% vs 隨機平均 +2.14%、600 次最大僅 +4.25%）\n● 高原：鄰域 36 組（買2~8 × 階梯8~12 × 賣77~83）每輪最低 +9.47%\n● 容錯：漏掉 50% 買訊，年損益僅 −10%\n  （因每日重算目標張數，不依賴任何歷史狀態）\n\n【誠實限制】\n排除近期多頭（2015~2022）後：每輪 +6.51%、勝率 93%、\n年損益 29 萬（18.1%／年）。保守預期請用這組數字，\n62 萬是含 2023~2026 多頭的水準。\n\n【停用條件】\n● 不可重新最佳化門檻（4／80／+10 固定）—— 逐年重調實測會失效\n● 連續 2 個完整年度虧損 → 停用\n● 單輪虧損超過 −15% → 人工檢視（歷史最差 −5.84%）`
+                      ? `【今日 14 項因素得分】買分 ${analysis?.twoSignal?.buyScore.toFixed(1) ?? '--'} → 應持有 ${analysis?.twoSignal?.targetLots ?? '--'} 張\n`
+                        + (analysis?.twoSignal?.buyFactors.map(f =>
+                            `  ${f.key.padEnd(11, '　')} ${String(f.score.toFixed(0)).padStart(3)}/100　貢獻 ${f.contrib.toFixed(2).padStart(5)}\n`
+                            + `      ${f.rule}`).join('\n') ?? '')
+                        + `\n\n【2301 買進評分 — 14 項等權，每項 7.14 分】\n\n族群權重：\n● 均線負乖離 35.7%（5 項）：MA120／MA60／MA20／MA10／MA5 負乖離\n● 自高點回落 21.4%（3 項）：自 60／20／10 日高點回落\n● 跌幅動能 21.4%（3 項）：近 5／3／1 日跌幅\n● 震盪超賣 21.4%（3 項）：K9 低檔／K5 低檔／RSI5 低檔\n\n【買進規則 — 目標持倉制】\n應持有張數 = floor((今日買分 − 4) / 10) + 1，買分 < 4 → 0 張\n\n買分 <4 → 0 張｜4~13 → 1 張｜14~23 → 2 張｜24~33 → 3 張\n34~43 → 4 張｜44~53 → 5 張｜54~63 → 6 張｜64~73 → 7 張\n74~83 → 8 張｜84~93 → 9 張｜94~100 → 10 張\n\n手上不足就補足差額。這是「下限」而非目標值 ——\n買分之後下降不需要賣，只有賣分 ≥ 80 才全部清空。\n\n【為什麼是這 14 項】\n以 2301 自身資料篩選「訓練期／測試期兩期同向為正」的因素，\n25 個候選中有 14 個通過。最強的是 MA120 負乖離\n（邊際 +5.958pp，訓練 +4.354／測試 +14.162）。\n\n實測優於直接沿用 1402 的清單（超額 +7.3pp vs +6.8pp），\n並剔除了兩個對 2301 有害的因素：\n● MACD 紅柱收斂 −1.48pp（在 1402 上有效，在 2301 上有害）\n● 箱型低位 −1.54pp\n以及測試期轉負的 RSI14／RSI21 低檔。\n\n【為什麼是等權而非最佳化權重】\n對 5562 組買方權重做系統性搜尋（全部單因素 + 全部雙因素 +\n全部三因素 + 等權 + 4000 組隨機 Dirichlet），以「訓練期選權重\n→ 測試期驗證」檢驗：\n● 訓練期第一名 → 測試期排名 3592/5562\n● 各共識權重 K=1~500 的測試期表現全部落在 PR 50 附近\n● NNLS 迴歸權重 → 測試期 +0.670pp ＜ 等權 +0.814pp\n→ 買方權重最佳化無效，任何合理的低接組合都差不多，故採族群等權。\n\n【驗證（2015-07 ~ 2026-08，11.1 年，含息還原）】\n● 買 14.3 次/年、賣 4.5 次/年 → 18.8 動作/年（每月 1.6 次）\n● 每輪報酬 +11.96%、勝率 92%（46 勝/4 敗）\n● 賺賠比 2.49、獲利因子 28.62、最差單輪 −5.84%\n● 平均持有 49 日（中位 16、最長 253）、帳面最差 −27%\n● 平均綁住 160 萬、最壞需備 272 萬（10 張）\n● 年損益 62 萬、資金效率 38.7%／年\n● 獲利年 11/12（2024 唯一虧損年）\n● 兩期都正：前半 +5.45%、後半 +13.13%\n● 隨機化 600 次 p = 0.0000\n  （實際 +11.96% vs 隨機平均 +2.14%、600 次最大僅 +4.25%）\n● 高原：鄰域 36 組（買2~8 × 階梯8~12 × 賣77~83）每輪最低 +9.47%\n● 容錯：漏掉 50% 買訊，年損益僅 −10%\n  （因每日重算目標張數，不依賴任何歷史狀態）\n\n【誠實限制】\n排除近期多頭（2015~2022）後：每輪 +6.51%、勝率 93%、\n年損益 29 萬（18.1%／年）。保守預期請用這組數字，\n62 萬是含 2023~2026 多頭的水準。\n\n【停用條件】\n● 不可重新最佳化門檻（4／80／+10 固定）—— 逐年重調實測會失效\n● 連續 2 個完整年度虧損 → 停用\n● 單輪虧損超過 −15% → 人工檢視（歷史最差 −5.84%）`
                       : `【6669 買進評分 V25 — 單一因素】\n\n評分 = RSI 低檔階梯（權重 100%）\n\n● RSI < 25 → 100 分\n● RSI < 30 → 80 分  ← 買進門檻\n● RSI < 40 → 50 分\n● RSI < 50 → 20 分\n● RSI ≥ 50 → 0 分\n\n【觸發條件】\nRSI 首次跌破 30，且距上次買進訊號滿 21 個交易日\n（約 1 個月，用來把頻率控制在每月最多一次）\n\n【實測品質（2019-07 ~ 2026-08）】\n● 買後 40 日平均 +17.58%（任一天買進的基準是 +7.84%）\n● 邊際 +9.7pp，勝率 76%\n● 價格位階 29.2（買在周邊 ±60 日區間的低 29%）\n● 訊號 22 次 / 7 年 = 3.1 次/年（每 4.0 個月）\n● 逐年 2~4 次，分布均勻（2020:3、2021:3、2022:4、2023:3、2024:3、2025:4、2026:2）\n\n【為什麼只用一個因素】\n對 10 個買進因素做系統性權重搜尋（2607 組，含全部單因素、\n全部雙因素、等權、3000 組隨機 Dirichlet），以「訓練期選權重\n→ 測試期驗證」檢驗：\n● 訓練期邊際 vs 測試期邊際 Spearman ρ = 僅 +0.10\n● 訓練期第一名（深度回檔74+KD26）測試期排名 2168/2607\n● 訓練期前 10 名平均測試邊際 +2.27pp\n  ＜ 全部組合平均 +4.88pp\n  → 依訓練期挑權重比亂選還差\n● 測試期邊際平均：1 因素 +5.62 ＞ 5 因素 +5.02\n  ＞ 2~4 因素 +4.6~4.7 ＞ 10 因素 +3.95\n\n10 個因素中只有 RSI 低檔（訓練 +8.62／測試 +10.20）與\nKD 低檔（+10.72／+8.45）在兩期都有效，其餘 8 個接近 0。\n把無效因素以任何權重混入，只會稀釋稀有訊號的品質。\n\n【門檻穩健性】\nRSI<28 邊際 +11.69pp、<30 +9.74pp、<32 +7.88pp、\n<40 +0.04pp（完全失效）。28~32 為高原，取 30。\n\n【備選】\nKD < 20 統計上等價（+8.45pp，1.9 次/年）。\n若不想押注單一指標可用 RSI50+KD50（+6.89pp），代價約 1.7pp。\n\n【誠實限制】\n樣本僅 22 個訊號，多重比較修正後 p≈0.034（勉強顯著）。\n邊際的真實期望值可能是 +5~7pp 而非 +9.7pp。\n僅適用 6669。`;
                     showInfo(e, 'buy', '買入評分模型', infoText);
                   }}
@@ -3196,23 +3196,9 @@ const App = () => {
                       {renderScoreBar(`${F.fam} (${F.weight.toFixed(1)}%・${F.n}項)`, F.score, F.weight, 'bg-emerald-500')}
                     </div>
                   ))}
-                  <div className="pt-1.5 border-t border-white/5 space-y-0.5 text-[10px] sm:text-[11px] font-mono max-h-64 overflow-y-auto">
-                    {analysis?.twoSignal?.buyFactors.map(f => (
-                      <div key={f.key} className={`flex items-center justify-between px-2 py-0.5 rounded ${
-                        f.score >= 70 ? 'bg-emerald-500/20 text-emerald-300 font-bold'
-                        : f.score > 0 ? 'bg-emerald-500/5 text-neutral-300' : 'text-neutral-600'}`}>
-                        <span className="truncate" title={f.rule}>{f.key}</span>
-                        <span className="shrink-0 ml-2">
-                          {f.score.toFixed(0)}<span className="text-neutral-600">/100</span>
-                          <span className="ml-1.5 text-neutral-500">＋{f.contrib.toFixed(2)}</span>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="text-[10px] text-neutral-500 pt-1.5 border-t border-white/5 leading-relaxed">
-                    每項滿分 100，貢獻 = 得分 ÷ 14。已剔除 MACD 紅柱收斂（−1.48pp）、
-                    箱型低位（−1.54pp）、RSI14／RSI21 低檔（測試期轉負）。
-                    權重最佳化實測無效（訓練最佳 → 測試排名 3592/5562），故採族群等權。
+                  <div className="text-[10px] text-neutral-500 pt-1.5 border-t border-white/5">
+                    {analysis?.twoSignal?.buyFactors.filter(f => f.score > 0).length ?? 0} / 14 項有得分
+                    <span className="text-neutral-700 ml-1.5">・逐項明細見右上 ⓘ</span>
                   </div>
                 </div>
               ) : (
@@ -3273,7 +3259,12 @@ const App = () => {
                     const infoText = stockSymbol === '3231'
                       ? `【評分標準】\n總分 100 由以下加權計算：\n\n1. 布林通道 (30%)：\n   短線波段策略，線性給分。\n   %B > 1.0：30分 (突破上軌滿分)\n   0.9 < %B <= 1.0：25→30分 (線性)\n   假突破：20分\n   (移除爆量保護，有賺就跑)\n\n2. KD 隨機指標 (25%)：\n   短線轉折指標。\n   K>80 直接滿分賣出，70 < K <= 80 分批調節。\n   無鈍化保護，有賺就跑。\n\n3. RSI 相對強弱 (25%)：\n   短線震盪指標。\n   RSI>75 直接滿分賣出，60 < RSI <= 75 分批調節。\n   頂背離直接滿分。\n\n4. MA 乖離 (10%)：\n   MA20月線：正乖離過大獲利了結，跌破月線停利/停損。\n\n5. FIBO 壓力 (5%)：\n   短線波段版，20日箱型。\n   最高價 >= ext1272：5分\n   最高價 >= maxPrice：3分\n   價格 < maxPrice：0分\n\n6. MACD 動能 (5%)：\n   動能上攻無力，綠柱收斂即給分。\n\n(註：斜率與 DMI 不列入評分，專注短線轉折)\n\n【賣出分數門檻】\n● >60分：清倉賣出 (Clear Out)\n   100% 全跑。過熱與轉弱共振訊號。\n   這組門檻為「收益優先 + 每月約 3~4 次動作」回測最佳化結果。\n\n● >52分：獲利調節 (Trim)\n   賣出 50% 持股。鎖利降風險。\n   先收現金，再等待下一段更明確訊號。\n\n● ≤52分：續抱\n   不動。尚未達到高勝率賣點。`
                       : stockSymbol === '2301'
-                      ? `【2301 賣出評分 — 11 項等權，每項 9.09 分】\n\n族群權重：\n● 震盪超買 54.5%（6 項）：RSI21／RSI14／RSI9／RSI5 高檔、K9／K5 高檔\n● 均線正乖離 18.2%（2 項）：MA60／MA120 正乖離\n● 相對位置 18.2%（2 項）：布林20 高檔、箱型高位\n● 自低點反彈 9.1%（1 項）：自 60 日低點反彈\n\n【賣出規則】\n賣分 ≥ 80 → 全部清空，不分批、無停損。\n\n【重要：賣分的作用不是「預測未來會跌」】\n這 11 項在 2301 上的前瞻邊際是負的（訓練 −0.12／測試 −2.38pp）——\n意思是 2301 超買之後往往還會漲（它是動能股）。\n但實際交易結果完全相反：+7.3pp 超額。\n\n用頻率對等檢定拆解（真買訊 + 隨機持有天數 vs 真買訊 + 真賣訊）：\n● 隨機出場：CAGR 23.62%、勝率 62%\n● 真實賣訊：CAGR 32.4%、勝率 90%\n→ 出場時機貢獻 +8.80pp（p = 0.0000）\n\n原因：賣分的價值在於「相對進場價鎖利」，它很可靠地出現在\n相對進場的高點。用前瞻報酬去挑賣出因素在 2301 上是錯的標準。\n\n【為什麼用 1402 的清單而非 2301 自己篩的】\n2301 自身篩選只有 2 項通過兩期同向（布林10 高檔 +0.89/+0.70pp、\nMA5 正乖離），前瞻邊際雖為正，但實際交易只有 +0.6pp 超額。\n1402 清單前瞻邊際為負卻有 +7.3pp 超額 —— 因此採用 1402 清單。\n這也讓「因素選擇」這個維度成為樣本外（用另一檔股票的資料挑的），\n證據等級高於用 2301 自己的資料挑因素。\n\n【為什麼是等權】\n對 4130 組賣方權重做系統性搜尋，訓練期共識權重\n（RSI21-63／K5-21／RSI9-11／K9-5）在測試期排名 5/4130（有效），\n但放進實際回測只有 CAGR 18.6%，等權清單是 34.6%。\n前瞻邊際與交易報酬衡量的不是同一件事，交易報酬才是目標。\n\n【賣門檻 80 的選擇】\n頻率-效益曲線（固定買門檻，掃賣門檻）：\n賣 62 → 6.1 次/年、每輪 +2.33%\n賣 71 → 4.1 次/年、每輪 +6.17%\n賣 74 → 3.6 次/年、每輪 +6.26%\n賣 80 → 2.3 次/年、每輪 +9.21%　← 搭配階梯加碼時最佳\n賣 83 → 1.9 次/年、每輪 +12.51%\n在目標持倉制下，賣 80 的組合有最佳的\n「每輪報酬 × 輪數 × 資金效率」平衡。\n\n【驗證】\n● 賣 4.5 次/年、每輪 +11.96%、勝率 92%\n● 隨機化 600 次 p = 0.0000\n● 兩期都正（前半 +5.45%、後半 +13.13%）\n● 鄰域 36 組每輪最低 +9.47%（賣 77~83 都穩定）\n\n【誠實限制】\n只有 50 輪樣本。排除近期多頭（2015~2022）後每輪降到 +6.51%。\n最長一輪抱了 253 個交易日（約 12 個月）。僅適用 2301。`
+                      ? `【今日 11 項因素得分】賣分 ${analysis?.twoSignal?.sellScore.toFixed(1) ?? '--'} / 80`
+                        + `${analysis?.twoSignal?.isSellToday ? '　★ 已達清空門檻' : `（還差 ${analysis?.twoSignal?.gapToSell.toFixed(1) ?? '--'} 分）`}\n`
+                        + (analysis?.twoSignal?.sellFactors.map(f =>
+                            `  ${f.key.padEnd(11, '　')} ${String(f.score.toFixed(0)).padStart(3)}/100　貢獻 ${f.contrib.toFixed(2).padStart(5)}\n`
+                            + `      ${f.rule}`).join('\n') ?? '')
+                        + `\n\n【2301 賣出評分 — 11 項等權，每項 9.09 分】\n\n族群權重：\n● 震盪超買 54.5%（6 項）：RSI21／RSI14／RSI9／RSI5 高檔、K9／K5 高檔\n● 均線正乖離 18.2%（2 項）：MA60／MA120 正乖離\n● 相對位置 18.2%（2 項）：布林20 高檔、箱型高位\n● 自低點反彈 9.1%（1 項）：自 60 日低點反彈\n\n【賣出規則】\n賣分 ≥ 80 → 全部清空，不分批、無停損。\n\n【重要：賣分的作用不是「預測未來會跌」】\n這 11 項在 2301 上的前瞻邊際是負的（訓練 −0.12／測試 −2.38pp）——\n意思是 2301 超買之後往往還會漲（它是動能股）。\n但實際交易結果完全相反：+7.3pp 超額。\n\n用頻率對等檢定拆解（真買訊 + 隨機持有天數 vs 真買訊 + 真賣訊）：\n● 隨機出場：CAGR 23.62%、勝率 62%\n● 真實賣訊：CAGR 32.4%、勝率 90%\n→ 出場時機貢獻 +8.80pp（p = 0.0000）\n\n原因：賣分的價值在於「相對進場價鎖利」，它很可靠地出現在\n相對進場的高點。用前瞻報酬去挑賣出因素在 2301 上是錯的標準。\n\n【為什麼用 1402 的清單而非 2301 自己篩的】\n2301 自身篩選只有 2 項通過兩期同向（布林10 高檔 +0.89/+0.70pp、\nMA5 正乖離），前瞻邊際雖為正，但實際交易只有 +0.6pp 超額。\n1402 清單前瞻邊際為負卻有 +7.3pp 超額 —— 因此採用 1402 清單。\n這也讓「因素選擇」這個維度成為樣本外（用另一檔股票的資料挑的），\n證據等級高於用 2301 自己的資料挑因素。\n\n【為什麼是等權】\n對 4130 組賣方權重做系統性搜尋，訓練期共識權重\n（RSI21-63／K5-21／RSI9-11／K9-5）在測試期排名 5/4130（有效），\n但放進實際回測只有 CAGR 18.6%，等權清單是 34.6%。\n前瞻邊際與交易報酬衡量的不是同一件事，交易報酬才是目標。\n\n【賣門檻 80 的選擇】\n頻率-效益曲線（固定買門檻，掃賣門檻）：\n賣 62 → 6.1 次/年、每輪 +2.33%\n賣 71 → 4.1 次/年、每輪 +6.17%\n賣 74 → 3.6 次/年、每輪 +6.26%\n賣 80 → 2.3 次/年、每輪 +9.21%　← 搭配階梯加碼時最佳\n賣 83 → 1.9 次/年、每輪 +12.51%\n在目標持倉制下，賣 80 的組合有最佳的\n「每輪報酬 × 輪數 × 資金效率」平衡。\n\n【驗證】\n● 賣 4.5 次/年、每輪 +11.96%、勝率 92%\n● 隨機化 600 次 p = 0.0000\n● 兩期都正（前半 +5.45%、後半 +13.13%）\n● 鄰域 36 組每輪最低 +9.47%（賣 77~83 都穩定）\n\n【誠實限制】\n只有 50 輪樣本。排除近期多頭（2015~2022）後每輪降到 +6.51%。\n最長一輪抱了 253 個交易日（約 12 個月）。僅適用 2301。`
                       : `【6669 賣出評分 V25 — 單一因素】\n\n評分 = 季線乖離階梯（權重 100%）\n乖離 = (收盤價 − MA60) / MA60 × 100%\n\n● 乖離 > 40% → 100 分　★ 減碼 1/2\n● 乖離 > 30% →  80 分　★ 減碼 1/3\n● 乖離 > 22% →  56 分　　預警\n● 乖離 > 15% →  32 分\n● 乖離 > 10% →  16 分\n● 乖離 ≤ 10% →   0 分\n\n【核心設計：分級減碼，不清倉】\n保留核心部位長抱，只在過熱時分批獲利入袋。\n同一波只觸發一次減碼，須待乖離跌回 18% 以下\n才重新啟用（避免在同一段高檔重複賣出）。\n\n【實測品質（2019-07 ~ 2026-08）】\n乖離>30%（主訊號，1.0 次/年）\n● 減碼後 40 日平均 −2.80%（基準 +7.89%）→ 邊際 +8.05pp\n● 價格位階 79.2（賣在周邊區間的高 79%）\n● 7 次減碼平均帳面獲利 +82%\n\n乖離>40%（極端，0.3 次/年）\n● 減碼後 20 日 −9.13%、40 日 −11.72%\n● 20 日內下跌機率 100%，價格位階 91.3\n\n乖離>22%（預警，2.6 次/年）\n● 減碼後 40 日 −0.16%，位階 72.4\n● 弱於 30% 那一級，因此只做提示不執行\n\n【已移除的成分與原因】\n● FIBO 壓力（原 35 分）：訓練 −0.92／測試 +8.06 反向。\n  且 7 年內觸及 1.272 僅 1 次、1.618 為 0 次，\n  實際上只透過「跌破 l618」給分 —— 那是停損不是獲利了結。\n● 高檔回落（原 30 分）：訓練 −2.42／測試 +0.60，無效。\n● MACD（+0.50／−2.20）、DMI（−16.24／−1.92）、\n  布林（−0.92／+2.81）、斜率：皆無或反向。\n\n【已移除破線強制停損】\n原規則：跌破 Fibo 0.618 → 強制清倉。\n實測跌破後 20 日平均 +6.45%（邊際 +3.26pp、t=4.07、\n兩期一致）—— 那是買點而非賣點。\n回測中此規則把全期報酬由 +835% 壓到 +115%，\n並使最大回檔由 −50% 惡化到 −68%。\n\n【減碼的取捨（端到端回測，每次買固定股數）】\n● 只買不賣：總回收倍數 3.55，最大回檔 −39%\n● 乖離>30% 減 1/3：倍數 2.20，回檔 −33%，取回現金 > 總投入\n● 減 1/2：倍數 1.90　● 多級減碼：倍數 1.63\n→ 減碼買的是「回檔縮小 + 獲利入袋」，代價是總報酬倍數。\n   建議只用單一級（>30% 減 1/3），不要多級。\n\n【誠實限制】\n減碼樣本僅 7 次。僅適用 6669。`;
                     showInfo(e, 'sell', '賣出評分模型', infoText);
                   }}
@@ -3298,24 +3289,9 @@ const App = () => {
                         : <span className="text-neutral-500 ml-2">還差 {analysis?.twoSignal?.gapToSell.toFixed(1)} 分</span>}
                     </span>
                   </div>
-                  <div className="pt-1.5 border-t border-white/5 space-y-0.5 text-[10px] sm:text-[11px] font-mono max-h-64 overflow-y-auto">
-                    {analysis?.twoSignal?.sellFactors.map(f => (
-                      <div key={f.key} className={`flex items-center justify-between px-2 py-0.5 rounded ${
-                        f.score >= 70 ? 'bg-rose-500/20 text-rose-300 font-bold'
-                        : f.score > 0 ? 'bg-rose-500/5 text-neutral-300' : 'text-neutral-600'}`}>
-                        <span className="truncate" title={f.rule}>{f.key}</span>
-                        <span className="shrink-0 ml-2">
-                          {f.score.toFixed(0)}<span className="text-neutral-600">/100</span>
-                          <span className="ml-1.5 text-neutral-500">＋{f.contrib.toFixed(2)}</span>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="text-[10px] text-neutral-500 pt-1.5 border-t border-white/5 leading-relaxed">
-                    賣分的作用是「相對進場價鎖利」，不是預測未來下跌 ——
-                    這 11 項的前瞻邊際為負（−0.12／−2.38pp），但頻率對等檢定顯示
-                    出場時機貢獻 +8.80pp（p=0.0000，隨機出場勝率僅 62%，真實賣訊 90%）。
-                    達門檻一次全部清空、不分批、無停損。
+                  <div className="text-[10px] text-neutral-500 pt-1.5 border-t border-white/5">
+                    {analysis?.twoSignal?.sellFactors.filter(f => f.score >= 70).length ?? 0} / 11 項達 70 分以上
+                    <span className="text-neutral-700 ml-1.5">・逐項明細見右上 ⓘ</span>
                   </div>
                 </div>
               ) : is6669 ? (
