@@ -6,7 +6,8 @@ const App = () => {
   // Tab 管理系統 - 預設兩個 tab
   const [tabs, setTabs] = useState([
     { id: '6669', symbol: '6669', data: [], loading: false, manualPrice: '', fetchError: null, visibleLayers: { ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false } },
-    { id: '3231', symbol: '3231', data: [], loading: false, manualPrice: '', fetchError: null, visibleLayers: { ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false } }
+    { id: '3231', symbol: '3231', data: [], loading: false, manualPrice: '', fetchError: null, visibleLayers: { ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false } },
+    { id: '2301', symbol: '2301', data: [], loading: false, manualPrice: '', fetchError: null, visibleLayers: { ma: false, fibo: false, rsi: false, macd: false, bb: false, slope: false, dmi: false, kd: false } }
   ]);
   const [activeTabId, setActiveTabId] = useState('6669');
   const [isChartExpanded, setIsChartExpanded] = useState(false);
@@ -23,6 +24,10 @@ const App = () => {
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId) || tabs[0], [tabs, activeTabId]);
   const stockSymbol = activeTab?.symbol || '6669';
   const is3231 = stockSymbol === '3231'; // 組件層級的 is3231，用於 JSX 渲染
+  const is2301 = stockSymbol === '2301'; // 2301 光寶科：目標持倉制（階梯加碼 + 賣訊清空）
+  const is6669 = !is3231 && !is2301;      // 6669 V25：RSI 買進 + 季線乖離減碼
+  // 2301 手動輸入目前持有張數（不寫入 localStorage，僅本次瀏覽有效）
+  const [lots2301, setLots2301] = useState('');
   const data = activeTab?.data || [];
   const loading = activeTab?.loading || false;
   const manualPrice = activeTab?.manualPrice || '';
@@ -154,6 +159,32 @@ const App = () => {
         return { k: kVal, d: dVal };
     });
 
+    // ── 2301 專用：K5（台股 1/3 平滑，視窗 5）──
+    let k5v = 50, d5v = 50;
+    const k5Data = sortedItems.map((_, i) => {
+        if (i < 4) return 50;
+        const wh = Math.max(...highs.slice(i - 4, i + 1));
+        const wl = Math.min(...lows.slice(i - 4, i + 1));
+        const rsv = wh === wl ? 50 : ((closes[i] - wl) / (wh - wl)) * 100;
+        k5v = (2/3) * k5v + (1/3) * rsv;
+        d5v = (2/3) * d5v + (1/3) * k5v;
+        return k5v;
+    });
+
+    // ── 2301 專用：Cutler RSI 多週期（與現有 rsiVal 同法：SMA 分母）──
+    const cutlerRSI = (period) => closes.map((_, i) => {
+      if (i < period) return null;
+      let up = 0, down = 0;
+      for (let j = i - period + 1; j <= i; j++) {
+        const diff = closes[j] - closes[j - 1];
+        if (diff > 0) up += diff; else down -= diff;
+      }
+      return 100 - (100 / (1 + (up / (down || 1e-9))));
+    });
+    const rsi5Arr = cutlerRSI(5);
+    const rsi9Arr = cutlerRSI(9);
+    const rsi21Arr = cutlerRSI(21);
+
     // DMI
     const tr = [], pdm = [], mdm = [];
     for(let i=1; i<closes.length; i++) {
@@ -215,12 +246,49 @@ const App = () => {
         if(upper !== lower) pctB = (closes[i] - lower) / (upper - lower);
         if(mid !== 0) bandWidth = (upper - lower) / mid;
       }
-      return { 
+      // ── 2301 專用：MA5 / MA10 / MA120 與各期負乖離 ──
+      const sma = (p) => i >= p - 1 ? closes.slice(i - p + 1, i + 1).reduce((a, b) => a + b, 0) / p : null;
+      const ma5 = sma(5), ma10 = sma(10), ma120 = sma(120);
+      const biasOf = (m) => (m && m !== 0) ? (closes[i] - m) / m * 100 : null;
+
+      // ── 2301 專用：近 1/3/5 日漲跌幅（%）──
+      const retN = (n) => i >= n ? (closes[i] / closes[i - n] - 1) * 100 : null;
+
+      // ── 2301 專用：自 N 日高點回落 / 自 60 日低點反彈（%）──
+      const pullback = (w) => {
+        const lo_ = Math.max(0, i - w + 1);
+        const pk = Math.max(...closes.slice(lo_, i + 1));
+        return pk > 0 ? (pk - closes[i]) / pk * 100 : 0;
+      };
+      const rebound = (w) => {
+        const lo_ = Math.max(0, i - w + 1);
+        const tg = Math.min(...closes.slice(lo_, i + 1));
+        return tg > 0 ? (closes[i] - tg) / tg * 100 : 0;
+      };
+
+      // ── 2301 專用：20 日箱型位置（0~1）──
+      let box20 = null;
+      if (i >= 19) {
+        const w = closes.slice(i - 19, i + 1);
+        const mx = Math.max(...w), mn = Math.min(...w);
+        box20 = mx > mn ? (closes[i] - mn) / (mx - mn) : 0.5;
+      }
+
+      return {
         ...item, ma20, ma60, rsiVal, slopeVal, upper, lower, mid, pctB, bandWidth,
         macd: osc[i] || 0, adx: adx[i] || 0, pdi: pdi[i] || 0, mdi: mdi[i] || 0,
         k: kdData[i].k, d: kdData[i].d,
         volMA5: volMA5[i] || 0, volMA20: volMA20[i] || 0, atr: atr14[i] || 0,
-        open: opens[i], volume: volumes[i]
+        open: opens[i], volume: volumes[i],
+        // ── 2301 評分所需 ──
+        ma5, ma10, ma120,
+        bias5: biasOf(ma5), bias10: biasOf(ma10), bias20: biasOf(ma20),
+        bias60: biasOf(ma60), bias120: biasOf(ma120),
+        rsi5: rsi5Arr[i], rsi9: rsi9Arr[i], rsi21: rsi21Arr[i], k5: k5Data[i],
+        ret1: retN(1), ret3: retN(3), ret5: retN(5),
+        pb10: pullback(10), pb20: pullback(20), pb60: pullback(60),
+        rb60: rebound(60), box20,
+        macdPrev: i > 0 ? (osc[i - 1] || 0) : null
       };
     });
   };
@@ -469,7 +537,8 @@ const App = () => {
     
     // 判斷當前 tab 使用的評分規則（根據 stockSymbol）
     const is3231 = stockSymbol === '3231';
-    
+    const is2301 = stockSymbol === '2301';
+
     // 線性映射函數（用於 FIBO 和斜率評分）
     const map = (val, inMin, inMax, outMin, outMax) => {
       const v = Math.max(Math.min(val, Math.max(inMin, inMax)), Math.min(inMin, inMax));
@@ -1212,7 +1281,10 @@ const App = () => {
     const b_Vol = b_BB;
     const s_Vol = s_BB;
 
-    // 高檔回落停利分（回測優化：確保「真的該賣時會被通知」的關鍵元件）
+    // ⚠ V25 起為死碼：6669 的賣分已改為 biasLadder 覆寫，此處算出的 s_PeakExit
+    //   不再影響任何結果（3231 也不使用）。保留僅為避免改動下方共用的加總式。
+    //   實測依據：高檔回落訓練期邊際 −2.42pp／測試期 +0.60pp，無預測力。
+    // 高檔回落停利分（舊版元件，已停用）
     // 閘門：近 15 日曾過熱(季線乖離>15%) 才啟用，避免一般小回檔誤觸
     // 觸發：自近 60 日最高收盤回落 ≥10/14/18% 分階給分（上限 30）
     let s_PeakExit = 0;
@@ -1241,9 +1313,9 @@ const App = () => {
       }
     }
 
-    // 總分
-    const totalBuyScore = Math.round(b_Fibo + b_Hist + b_Trend + b_Osc + b_Vol);
-    const totalSellScore = Math.min(100, Math.round(s_Fibo + s_Hist + s_Trend + s_Osc + s_Vol + s_PeakExit));
+    // 總分（3231 沿用加權總分；6669 於下方改用單一因素評分覆寫）
+    let totalBuyScore = Math.round(b_Fibo + b_Hist + b_Trend + b_Osc + b_Vol);
+    let totalSellScore = Math.min(100, Math.round(s_Fibo + s_Hist + s_Trend + s_Osc + s_Vol + s_PeakExit));
 
     // 計算 maSlope 和 bias（用於顯示和霸王條款判斷，需要在 buySignal 判斷之前計算）
     const maValue = is3231 ? last.ma20 : last.ma60;
@@ -1260,6 +1332,356 @@ const App = () => {
     // 斜率改善 = 今日斜率 > 昨日斜率（都是負數時，數值越大代表負值越小，即改善）
     const isSlopeImproving = maSlope < 0 && prevMaSlope !== null && maSlope > prevMaSlope;
 
+    // ==================================================================
+    // 6669 評分 V25：系統性權重搜尋後改為「單一因素」
+    //   買進 = RSI 低檔階梯（100 分）  賣出 = 季線乖離階梯（100 分）
+    //
+    // 依據：對 10 個買進因素／9 個賣出因素做系統性搜尋（2607／2828 組權重，
+    //   含全部單因素、全部雙因素、等權、各 3000 組隨機 Dirichlet），以
+    //   「訓練期 2019-07~2023-02 選權重 → 測試期 2023-02~2026-08 驗證」檢驗：
+    //   ● 訓練期邊際 vs 測試期邊際 Spearman ρ = +0.10（買）/ +0.40（賣）
+    //   ● 訓練期第一名（深度回檔74+KD26）測試期排名 2168/2607
+    //   ● 訓練期前 10 名平均測試邊際 +2.27pp < 全部組合平均 +4.88pp
+    //     → 依訓練期挑權重比亂選還差，權重最佳化＝配適噪音
+    //   ● 測試期邊際平均：1 因素 +5.62 > 5 因素 +5.02 > 2~4 因素 +4.6~4.7
+    //   買進側 10 因素中僅 RSI 低檔（+8.62/+10.20）與 KD 低檔（+10.72/+8.45）
+    //   兩期都有效；賣出側僅季線乖離（+5.70/+10.51）等 3 項有效，乖離最強。
+    //
+    // 實測品質（相對無條件基準）：
+    //   買 RSI<30：買後 40 日 +17.58%（基準 +7.84%），勝率 76%，價格位階 29.2
+    //   賣 乖離>30%：減碼後 40 日 −2.80%（基準 +7.89%），價格位階 79.2
+    // 頻率：買 3.1 次/年（每 4.0 個月）、減碼 1.0 次/年
+    // ==================================================================
+    const RSI_BUY_LV = 30;   // 買進門檻（穩健區間 28~32；RSI<40 完全無效）
+    const BUY_GAP = 21;      // 買進訊號最小間隔（交易日，約 1 個月）
+    const TRIM_LV = 30;      // 減碼門檻（季線乖離 %）
+    const WARN_LV = 22;      // 預警門檻（季線乖離 %）
+    const TRIM_REARM = 18;   // 乖離跌回此值以下，減碼訊號重新啟用（避免同一波重複減碼）
+
+    const rsiLadder = (r) => {
+      if (r === null || r === undefined || isNaN(r)) return 0;
+      if (r < 25) return 100;
+      if (r < 30) return 80;
+      if (r < 40) return 50;
+      if (r < 50) return 20;
+      return 0;
+    };
+    const biasLadder = (b) => {
+      if (b === null || b === undefined || isNaN(b)) return 0;
+      if (b > 40) return 100;
+      if (b > 30) return 80;
+      if (b > 22) return 56;
+      if (b > 15) return 32;
+      if (b > 10) return 16;
+      return 0;
+    };
+    const biasAtIdx = (idx) => {
+      const d = data[idx];
+      if (!d || !d.ma60) return null;
+      return (d.price - d.ma60) / d.ma60 * 100;
+    };
+
+    // 6669 訊號狀態：完全由股價資料推算，不需要任何本機記錄
+    let sixSignal = null;
+    if (!is3231 && !is2301) {
+      const buyIdx = [], trimIdx = [];
+      let lastBuyMark = -9999, trimArmed = true;
+      for (let i = 14; i < data.length; i++) {
+        const r = data[i].rsiVal, rp = data[i - 1].rsiVal;
+        // 買進：RSI 首次跌破 30，且距上次買進訊號滿 21 個交易日
+        if (r !== null && r !== undefined && r < RSI_BUY_LV &&
+            (rp === null || rp === undefined || rp >= RSI_BUY_LV) &&
+            (i - lastBuyMark) >= BUY_GAP) {
+          buyIdx.push(i);
+          lastBuyMark = i;
+        }
+        // 減碼：季線乖離突破 30%，且本波尚未觸發過
+        const bi = biasAtIdx(i);
+        if (bi !== null) {
+          if (trimArmed && bi > TRIM_LV) { trimIdx.push(i); trimArmed = false; }
+          if (bi < TRIM_REARM) trimArmed = true;
+        }
+      }
+      const li = data.length - 1;
+      const lastBuyIdx = buyIdx.length ? buyIdx[buyIdx.length - 1] : null;
+      const lastTrimIdx = trimIdx.length ? trimIdx[trimIdx.length - 1] : null;
+
+      // 覆寫 6669 總分
+      totalBuyScore = rsiLadder(last.rsiVal);
+      totalSellScore = biasLadder(bias);
+
+      sixSignal = {
+        isBuyToday: lastBuyIdx === li,
+        isTrimToday: lastTrimIdx === li,
+        rsiReady: last.rsiVal !== null && last.rsiVal < RSI_BUY_LV,
+        gapLeft: lastBuyIdx !== null ? Math.max(0, BUY_GAP - (li - lastBuyIdx)) : 0,
+        daysSinceBuy: lastBuyIdx !== null ? li - lastBuyIdx : null,
+        lastBuyDate: lastBuyIdx !== null ? data[lastBuyIdx].fullDate : null,
+        lastBuyPrice: lastBuyIdx !== null ? data[lastBuyIdx].price : null,
+        lastTrimDate: lastTrimIdx !== null ? data[lastTrimIdx].fullDate : null,
+        lastTrimPrice: lastTrimIdx !== null ? data[lastTrimIdx].price : null,
+        buyCount: buyIdx.length,
+        trimCount: trimIdx.length,
+        trimArmed,
+        rsiTrend: data.slice(-5).map(d => ({ date: d.fullDate, rsi: d.rsiVal })),
+        levels: [WARN_LV, TRIM_LV, 40].map(lv => ({
+          lv,
+          price: last.ma60 ? last.ma60 * (1 + lv / 100) : null,
+          gap: last.ma60 ? (last.ma60 * (1 + lv / 100) / p - 1) * 100 : null,
+          label: lv === WARN_LV ? '預警：接近減碼區' : (lv === TRIM_LV ? '★ 減碼 1/3' : '★ 減碼 1/2'),
+          hit: bias > lv
+        })),
+        thresholds: { RSI_BUY_LV, BUY_GAP, TRIM_LV, WARN_LV, TRIM_REARM }
+      };
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       2301 光寶科 — 目標持倉制（V1）
+       ───────────────────────────────────────────────────────────────────────
+       規則（三行）：
+         1. 應持有張數 = floor((今日買分 − 4) / 10) + 1，買分 < 4 → 0 張
+         2. 手上不足就補足差額；買分下降不賣（此數字是下限，非目標值）
+         3. 賣分 ≥ 80 → 全部清空
+       無停損（實測加停損會破壞「越跌越買、超買了結」的機制）。
+
+       因素來源與驗證（回測 2015-07 ~ 2026-08，11.1 年，含息還原）：
+         • 買方 14 項＝以 2301 自身資料篩出「訓練/測試兩期同向為正」者。
+           實測優於沿用 1402 清單（超額 +7.3pp vs +6.8pp），並剔除了
+           MACD紅柱收斂（在 2301 為 −1.48pp 的有害因素）與箱型低位（−1.54pp）。
+         • 賣方 11 項＝1402 選出的清單（因素選擇對 2301 為樣本外）。
+           2301 自身篩出的賣方因素前瞻邊際雖為正（+0.89/+0.70pp），
+           但實際交易只有 +0.6pp 超額；1402 清單前瞻邊際為負（−0.12/−2.38pp）
+           卻有 +7.3pp 超額 —— 因為賣分的作用是「相對進場價鎖利」而非
+           「預測未來下跌」。頻率對等檢定：出場時機貢獻 +8.80pp（p=0.0000），
+           進場時機貢獻 +12.56pp（p=0.0000）。
+         • 買/賣兩側權重最佳化實測：買側訓練最佳權重在測試期排名 3592/5562（無效）
+           → 故採族群等權；賣側訓練共識權重測試期排名 5/4130（有效）但實際
+           交易報酬低於等權清單，故同樣採等權。
+
+       績效（目標持倉制、每次買 1 張、賣訊清空）：
+         買 14.3 次/年、賣 4.5 次/年 → 18.8 動作/年（每月 1.6 次）
+         每輪報酬 +11.96%、勝率 92%（46 勝/4 敗）、賺賠比 2.49、獲利因子 28.62
+         最差單輪 −5.84%、帳面最差 −27%、平均持有 49 日（中位 16、最長 253）
+         平均綁住 160 萬、最壞需備 272 萬（10 張）、年損益 62 萬、資金效率 38.7%
+         獲利年 11/12（2024 唯一虧損年）
+       驗證：
+         兩期都正（前半 +5.45%、後半 +13.13%）
+         隨機化 600 次 p = 0.0000（實際 +11.96% vs 隨機平均 +2.14%、最大 +4.25%）
+         高原：鄰域 36 組（買2~8 × 階梯8~12 × 賣77~83）每輪最低 +9.47%
+         容錯：漏掉 50% 買訊，年損益僅 −10%（因每日重算目標，不依賴歷史狀態）
+         排除近期多頭（2015~2022）：每輪 +6.51%、勝率 93%、年損益 29 萬
+           → 保守預期請用此組數字（18.1%/年）
+       停用條件：
+         連續 2 個完整年度虧損 → 停用；單輪虧損超過 −15% → 人工檢視。
+         不可重新最佳化門檻（4 / 80 / +10 固定）—— 逐年重調門檻實測會失效。
+       ═══════════════════════════════════════════════════════════════════════ */
+    const TWO_BUY_LV = 4;    // 第 1 張所需買分
+    const TWO_SELL_LV = 80;  // 全部清空門檻
+    const TWO_STEP = 10;     // 每多 1 張，門檻 +10 分
+    let twoSignal = null;
+
+    if (is2301) {
+      // 階梯給分：值越小分數越高
+      const ladDown = (v, cuts, vals) => {
+        if (v === null || v === undefined || isNaN(v)) return 0;
+        for (let k = 0; k < cuts.length; k++) if (v <= cuts[k]) return vals[k];
+        return 0;
+      };
+      // 階梯給分：值越大分數越高
+      const ladUp = (v, cuts, vals) => {
+        if (v === null || v === undefined || isNaN(v)) return 0;
+        for (let k = 0; k < cuts.length; k++) if (v >= cuts[k]) return vals[k];
+        return 0;
+      };
+
+      // ── 買進 14 項（等權，每項 100/14 = 7.14 分）──
+      const BUY_F = [
+        { k: 'MA120負乖離', fam: '均線負乖離', r: '≤−20%→100｜≤−12%→70｜≤−5%→40｜≤0%→15',
+          f: d => ladDown(d.bias120, [-20, -12, -5, 0], [100, 70, 40, 15]) },
+        { k: 'MA60負乖離', fam: '均線負乖離', r: '≤−15%→100｜≤−9%→70｜≤−4%→40｜≤0%→15',
+          f: d => ladDown(d.bias60, [-15, -9, -4, 0], [100, 70, 40, 15]) },
+        { k: 'MA20負乖離', fam: '均線負乖離', r: '≤−9%→100｜≤−6%→70｜≤−3%→40｜≤0%→15',
+          f: d => ladDown(d.bias20, [-9, -6, -3, 0], [100, 70, 40, 15]) },
+        { k: 'MA10負乖離', fam: '均線負乖離', r: '≤−6%→100｜≤−4%→70｜≤−2%→40｜≤0%→15',
+          f: d => ladDown(d.bias10, [-6, -4, -2, 0], [100, 70, 40, 15]) },
+        { k: 'MA5負乖離', fam: '均線負乖離', r: '≤−4%→100｜≤−2.5%→70｜≤−1%→40｜≤0%→15',
+          f: d => ladDown(d.bias5, [-4, -2.5, -1, 0], [100, 70, 40, 15]) },
+        { k: '自60日高回落', fam: '自高點回落', r: '≥22%→100｜≥14%→70｜≥8%→40｜≥4%→15',
+          f: d => ladUp(d.pb60, [22, 14, 8, 4], [100, 70, 40, 15]) },
+        { k: '自20日高回落', fam: '自高點回落', r: '≥13%→100｜≥8%→70｜≥5%→40｜≥2%→15',
+          f: d => ladUp(d.pb20, [13, 8, 5, 2], [100, 70, 40, 15]) },
+        { k: '自10日高回落', fam: '自高點回落', r: '≥8%→100｜≥5%→70｜≥3%→40｜≥1.5%→15',
+          f: d => ladUp(d.pb10, [8, 5, 3, 1.5], [100, 70, 40, 15]) },
+        { k: '近5日跌幅', fam: '跌幅動能', r: '≤−8%→100｜≤−5%→70｜≤−2.5%→40｜≤0%→15',
+          f: d => ladDown(d.ret5, [-8, -5, -2.5, 0], [100, 70, 40, 15]) },
+        { k: '近3日跌幅', fam: '跌幅動能', r: '≤−6%→100｜≤−4%→70｜≤−2%→40｜≤0%→15',
+          f: d => ladDown(d.ret3, [-6, -4, -2, 0], [100, 70, 40, 15]) },
+        { k: '近1日下跌', fam: '跌幅動能', r: '≤−3%→100｜≤−2%→70｜≤−1%→40｜≤0%→15',
+          f: d => ladDown(d.ret1, [-3, -2, -1, 0], [100, 70, 40, 15]) },
+        { k: 'K9低檔', fam: '震盪超賣', r: '≤10→100｜≤20→80｜≤30→45｜≤40→20',
+          f: d => ladDown(d.k, [10, 20, 30, 40], [100, 80, 45, 20]) },
+        { k: 'K5低檔', fam: '震盪超賣', r: '≤10→100｜≤20→80｜≤30→45｜≤40→20',
+          f: d => ladDown(d.k5, [10, 20, 30, 40], [100, 80, 45, 20]) },
+        { k: 'RSI5低檔', fam: '震盪超賣', r: '≤15→100｜≤25→80｜≤35→50｜≤45→20',
+          f: d => ladDown(d.rsi5, [15, 25, 35, 45], [100, 80, 50, 20]) },
+      ];
+      // ── 賣出 11 項（等權，每項 100/11 = 9.09 分）──
+      const SELL_F = [
+        { k: 'RSI21高檔', fam: '震盪超買', r: '≥68→100｜≥62→80｜≥55→50｜≥48→20',
+          f: d => ladUp(d.rsi21, [68, 62, 55, 48], [100, 80, 50, 20]) },
+        { k: 'RSI14高檔', fam: '震盪超買', r: '≥72→100｜≥66→80｜≥58→50｜≥50→20',
+          f: d => ladUp(d.rsiVal, [72, 66, 58, 50], [100, 80, 50, 20]) },
+        { k: 'RSI9高檔', fam: '震盪超買', r: '≥80→100｜≥70→80｜≥60→50｜≥52→20',
+          f: d => ladUp(d.rsi9, [80, 70, 60, 52], [100, 80, 50, 20]) },
+        { k: 'RSI5高檔', fam: '震盪超買', r: '≥85→100｜≥75→80｜≥65→50｜≥55→20',
+          f: d => ladUp(d.rsi5, [85, 75, 65, 55], [100, 80, 50, 20]) },
+        { k: 'K9高檔', fam: '震盪超買', r: '≥90→100｜≥80→80｜≥70→45｜≥60→20',
+          f: d => ladUp(d.k, [90, 80, 70, 60], [100, 80, 45, 20]) },
+        { k: 'K5高檔', fam: '震盪超買', r: '≥90→100｜≥80→80｜≥70→45｜≥60→20',
+          f: d => ladUp(d.k5, [90, 80, 70, 60], [100, 80, 45, 20]) },
+        { k: 'MA60正乖離', fam: '均線正乖離', r: '≥15%→100｜≥9%→70｜≥4%→40｜≥0%→15',
+          f: d => ladUp(d.bias60, [15, 9, 4, 0], [100, 70, 40, 15]) },
+        { k: 'MA120正乖離', fam: '均線正乖離', r: '≥20%→100｜≥12%→70｜≥5%→40｜≥0%→15',
+          f: d => ladUp(d.bias120, [20, 12, 5, 0], [100, 70, 40, 15]) },
+        { k: '布林20高檔', fam: '相對位置', r: '%B≥1.0→100｜≥0.9→70｜≥0.75→40｜≥0.6→15',
+          f: d => ladUp(d.pctB, [1.0, 0.9, 0.75, 0.6], [100, 70, 40, 15]) },
+        { k: '箱型高位', fam: '相對位置', r: '20日位置≥0.95→100｜≥0.85→70｜≥0.7→40｜≥0.55→15',
+          f: d => ladUp(d.box20, [0.95, 0.85, 0.7, 0.55], [100, 70, 40, 15]) },
+        { k: '自60日低反彈', fam: '自低點反彈', r: '≥22%→100｜≥14%→70｜≥8%→40｜≥4%→15',
+          f: d => ladUp(d.rb60, [22, 14, 8, 4], [100, 70, 40, 15]) },
+      ];
+
+      const bScoreOf = (d) => BUY_F.reduce((a, x) => a + x.f(d), 0) / BUY_F.length;
+      const sScoreOf = (d) => SELL_F.reduce((a, x) => a + x.f(d), 0) / SELL_F.length;
+      const bArr = data.map(bScoreOf);
+      const sArr = data.map(sScoreOf);
+
+      // 買分 → 應持有張數（下限）
+      const targetLots = (sc) => sc < TWO_BUY_LV ? 0
+        : Math.floor((sc - TWO_BUY_LV) / TWO_STEP) + 1;
+
+      // 覆寫 2301 總分
+      totalBuyScore = Math.round(bArr[data.length - 1] * 10) / 10;
+      totalSellScore = Math.round(sArr[data.length - 1] * 10) / 10;
+
+      // ── 參考持倉推演（假設完全依訊號執行；訊號用前一日、成交用當日開盤）──
+      const START = Math.min(130, Math.max(0, data.length - 1));
+      let lots = 0, costSum = 0, entryIdx = null;
+      let nBuyAct = 0, nSellAct = 0;
+      const rounds = [];
+      for (let i = START; i < data.length; i++) {
+        const sig = i - 1;
+        const px = data[i].open || data[i].price;
+        if (lots > 0 && sArr[sig] >= TWO_SELL_LV) {
+          const proceeds = lots * px * 1000 * (1 - 0.001425 - 0.003);
+          rounds.push({
+            entry: data[entryIdx].fullDate, exit: data[i].fullDate,
+            lots, avg: costSum / lots / 1000, exitPx: px,
+            pnl: proceeds - costSum, ret: (proceeds - costSum) / costSum * 100,
+            days: i - entryIdx
+          });
+          lots = 0; costSum = 0; entryIdx = null; nSellAct++;
+        }
+        const tgt = targetLots(bArr[sig]);
+        if (tgt > lots) {
+          const add = tgt - lots;
+          if (lots === 0) entryIdx = i;
+          costSum += add * px * 1000 * 1.001425;
+          lots += add;
+          nBuyAct++;
+        }
+      }
+      // 年數用實際日曆天數（台股每年約 242 個交易日，用 252 會低估年數、高估頻率）
+      const d0 = new Date(data[START].fullDate);
+      const d1 = new Date(data[data.length - 1].fullDate);
+      const yrs = Math.max((d1 - d0) / 86400000 / 365.25, 0.01);
+      const wins = rounds.filter(r => r.pnl > 0).length;
+      const costTot = rounds.reduce((a, r) => a + r.lots * r.avg * 1000, 0);
+      const pnlTot = rounds.reduce((a, r) => a + r.pnl, 0);
+
+      const bNow = bArr[data.length - 1];
+      const sNow = sArr[data.length - 1];
+      const tgtNow = targetLots(bNow);
+      const needForNext = TWO_BUY_LV + tgtNow * TWO_STEP;
+
+      twoSignal = {
+        buyScore: bNow, sellScore: sNow,
+        targetLots: tgtNow,
+        needForNext,                                  // 再多 1 張所需買分
+        gapToNext: Math.max(0, needForNext - bNow),
+        gapToSell: Math.max(0, TWO_SELL_LV - sNow),
+        isSellToday: sNow >= TWO_SELL_LV,
+        thresholds: { TWO_BUY_LV, TWO_SELL_LV, TWO_STEP },
+        // 階梯對照表（買分區間 → 應持有張數）
+        ladder: Array.from({ length: 10 }, (_, n) => {
+          const lo = TWO_BUY_LV + n * TWO_STEP;
+          const hi = TWO_BUY_LV + (n + 1) * TWO_STEP - 1;
+          return {
+            lots: n + 1, from: lo, to: n === 9 ? 100 : hi,
+            hit: bNow >= lo && (n === 9 || bNow <= hi),
+            cleared: bNow >= lo,
+            days: data.slice(START).filter((_, j) => {
+              const v = bArr[START + j];
+              return v >= lo && (n === 9 || v <= hi);
+            }).length
+          };
+        }),
+        // 各因素今日得分
+        buyFactors: BUY_F.map(x => ({
+          key: x.k, fam: x.fam, rule: x.r, score: x.f(last),
+          contrib: x.f(last) / BUY_F.length
+        })),
+        sellFactors: SELL_F.map(x => ({
+          key: x.k, fam: x.fam, rule: x.r, score: x.f(last),
+          contrib: x.f(last) / SELL_F.length
+        })),
+        // 族群彙總
+        buyFams: ['均線負乖離', '自高點回落', '跌幅動能', '震盪超賣'].map(fm => {
+          const g = BUY_F.filter(x => x.fam === fm);
+          return {
+            fam: fm, n: g.length,
+            weight: g.length / BUY_F.length * 100,
+            score: g.reduce((a, x) => a + x.f(last), 0) / BUY_F.length
+          };
+        }),
+        sellFams: ['震盪超買', '均線正乖離', '相對位置', '自低點反彈'].map(fm => {
+          const g = SELL_F.filter(x => x.fam === fm);
+          return {
+            fam: fm, n: g.length,
+            weight: g.length / SELL_F.length * 100,
+            score: g.reduce((a, x) => a + x.f(last), 0) / SELL_F.length
+          };
+        }),
+        // 參考持倉（假設完全照訊號執行）
+        ref: {
+          lots, avg: lots > 0 ? costSum / lots / 1000 : null,
+          cost: costSum, mv: lots * p * 1000,
+          floatPct: lots > 0 ? (lots * p * 1000 / costSum - 1) * 100 : null,
+          entryDate: entryIdx !== null ? data[entryIdx].fullDate : null,
+          holdDays: entryIdx !== null ? (data.length - 1 - entryIdx) : null
+        },
+        stats: {
+          buyPerYear: nBuyAct / yrs, sellPerYear: nSellAct / yrs,
+          actPerYear: (nBuyAct + nSellAct) / yrs,
+          rounds: rounds.length, wins,
+          winRate: rounds.length ? wins / rounds.length * 100 : 0,
+          avgRet: costTot ? pnlTot / costTot * 100 : 0,
+          avgLots: rounds.length ? rounds.reduce((a, r) => a + r.lots, 0) / rounds.length : 0,
+          avgDays: rounds.length ? rounds.reduce((a, r) => a + r.days, 0) / rounds.length : 0,
+          maxLots: rounds.length ? Math.max(...rounds.map(r => r.lots)) : 0
+        },
+        recent: rounds.slice(-6).reverse(),
+        trend: data.slice(-10).map((d, j) => {
+          const idx = data.length - 10 + j;
+          return {
+            date: d.fullDate, price: d.price,
+            buy: bArr[idx], sell: sArr[idx], tgt: targetLots(bArr[idx])
+          };
+        }),
+        _bArr: bArr, _sArr: sArr
+      };
+    }
+
     // 訊號判斷
     let buySignal = { text: '觀望', color: 'text-neutral-500' };
     if (is3231) {
@@ -1274,17 +1696,23 @@ const App = () => {
       if (maSlope < 0 && !isSlopeImproving && totalBuyScore > 38) {
         buySignal = { ...buySignal, text: buySignal.text + ' (逆勢)' };
       }
+    } else if (is2301) {
+      // 2301：買分直接對應「應持有張數」，不足就補足差額
+      const t = twoSignal.targetLots;
+      if (t >= 5) buySignal = { text: `應持有 ${t} 張（重壓區）`, color: 'text-emerald-400 font-bold' };
+      else if (t >= 2) buySignal = { text: `應持有 ${t} 張`, color: 'text-emerald-400 font-bold' };
+      else if (t === 1) buySignal = { text: '應持有 1 張', color: 'text-cyan-400' };
+      else buySignal = { text: `未達買區（差 ${twoSignal.gapToNext.toFixed(1)} 分）`, color: 'text-neutral-500' };
     } else {
-      // 6669：原版買入標準
-      if (totalBuyScore > 30) buySignal = { text: '強力買進', color: 'text-emerald-400 font-bold' };
-      else if (totalBuyScore > 22) buySignal = { text: '分批佈局', color: 'text-cyan-400' };
-      else if (totalBuyScore >= 20) buySignal = { text: '中性觀察', color: 'text-blue-400' };
-      
-      // 霸王條款：只有在建議買入時（>30分）且斜率持續惡化時才需要「逆勢」警告
-      // 如果斜率在改善（負值縮小），代表趨勢可能轉好，不顯示警告
-      if (maSlope < 0 && !isSlopeImproving && totalBuyScore > 30) {
-        buySignal = { ...buySignal, text: buySignal.text + ' (逆勢)' };
+      // 6669 V25：買進 = RSI 低檔階梯，需 RSI<30 且距上次買進訊號滿 21 交易日
+      if (sixSignal?.isBuyToday) {
+        buySignal = { text: '買進（本日訊號）', color: 'text-emerald-400 font-bold' };
+      } else if (sixSignal?.rsiReady && sixSignal?.gapLeft > 0) {
+        buySignal = { text: `RSI 已達標，需再等 ${sixSignal.gapLeft} 個交易日`, color: 'text-cyan-400' };
+      } else if (totalBuyScore >= 50) {
+        buySignal = { text: '接近買區（RSI<40）', color: 'text-blue-400' };
       }
+      // 其他：觀望（預設值）。已移除「逆勢」霸王條款 —— 季線斜率實測無預測力。
     }
 
     let sellSignal = { text: '續抱', color: 'text-emerald-400' };
@@ -1293,20 +1721,26 @@ const App = () => {
       if (totalSellScore > 60) sellSignal = { text: '清倉賣出 (Clear Out)', color: 'text-rose-500 font-bold' };
       else if (totalSellScore > 52) sellSignal = { text: '獲利調節 (Trim)', color: 'text-orange-400' };
       // <= 52 分：續抱（預設值）
+    } else if (is2301) {
+      // 2301：賣分 ≥ 80 一次全部清空，無分批
+      if (twoSignal.isSellToday) sellSignal = { text: '全部清空', color: 'text-rose-500 font-bold' };
+      else if (totalSellScore >= 70) sellSignal = { text: `接近清空（差 ${twoSignal.gapToSell.toFixed(1)} 分）`, color: 'text-amber-400' };
+      else sellSignal = { text: '續抱', color: 'text-emerald-400' };
     } else {
-      // 6669：兩段式賣出（2019~2026 全期回測最佳化，含高檔回落停利分）
-      // ● 真的該賣 / 清倉 = 50：碰斐波延伸壓力、破線、或高檔回落確認的真正危險點
-      //   回測此門檻能在 2026/5-6 等大回落可靠通知，年約 3.9 次，保留 +479% 獲利
-      // ● 波段了結 / 減碼 = 42：提早一階的鎖利提醒（每約 3~4 個月一次）
-      if (totalSellScore > 50) sellSignal = { text: '清倉賣出', color: 'text-rose-500 font-bold' };
-      else if (totalSellScore > 42) sellSignal = { text: '波段了結 (減碼)', color: 'text-orange-400' };
+      // 6669 V25：賣出 = 季線乖離階梯。分級減碼，不清倉（核心長抱）
+      // 乖離>40% → 減 1/2（0.3 次/年，位階 91.3，20日內 100% 下跌）
+      // 乖離>30% → 減 1/3（1.0 次/年，位階 79.2，減碼後 40 日 −2.80%）
+      // 乖離>22% → 預警（2.6 次/年，位階 72.4）
+      if (bias > 40) sellSignal = { text: '減碼 1/2', color: 'text-rose-500 font-bold' };
+      else if (bias > TRIM_LV) sellSignal = { text: '減碼 1/3', color: 'text-orange-400' };
+      else if (bias > WARN_LV) sellSignal = { text: '預警：接近減碼區', color: 'text-amber-400' };
+      // 其他：續抱（預設值）
     }
 
-    // 6669 的停損判斷（3231 不使用此邏輯）
-    if (!is3231 && fibo.l618 && p < fibo.l618) {
-      sellSignal = { text: '破線 (強制停損)', color: 'text-red-600 font-black animate-pulse' };
-    }
-    
+    // 已移除 6669 的「破線 (強制停損)」：實測跌破 Fibo 0.618 後 20 日平均 +6.45%
+    // （edge +3.26pp，t=4.07，兩期一致），是買點而非賣點；回測中此規則將
+    // 全期報酬由 +835% 壓到 +115%，並使最大回檔由 −50% 惡化到 −68%。
+
     // 計算前5天的買入和賣出分數（使用固定日期，確保歷史分數穩定）
     const historicalScores = [];
     
@@ -1732,9 +2166,17 @@ const App = () => {
       const histTotalBuyScore = Math.round(histB_Fibo + histB_Hist + histB_Trend + histB_Osc + histB_Vol);
       const histTotalSellScore = Math.min(100, Math.round(histS_Fibo + histS_Hist + histS_Trend + histS_Osc + histS_Vol + histS_PeakExit));
       
+      // 歷史徽章：各分頁都改用與當日一致的評分方式
+      // 6669 → 單一因素階梯；2301 → 25 項階梯（改顯示「應持有張數」對應的買分）
       historicalScores.push({
-        buy: histTotalBuyScore,
-        sell: histTotalSellScore,
+        buy: is3231 ? histTotalBuyScore
+           : is2301 ? Math.round(twoSignal._bArr[histIndex])
+           : rsiLadder(histLast.rsiVal),
+        sell: is3231 ? histTotalSellScore
+            : is2301 ? Math.round(twoSignal._sArr[histIndex])
+            : biasLadder(biasAtIdx(histIndex)),
+        lots: is2301 ? (twoSignal._bArr[histIndex] < TWO_BUY_LV ? 0
+              : Math.floor((twoSignal._bArr[histIndex] - TWO_BUY_LV) / TWO_STEP) + 1) : undefined,
         date: histLast.fullDate || histLast.date
       });
     }
@@ -1746,51 +2188,82 @@ const App = () => {
       color: 'text-neutral-300',
       bgClass: 'bg-neutral-500/20 border-neutral-500/40'
     };
-    if (!is3231 && historicalScores.length > 0) {
-      const prevDayBuyTotal = historicalScores[historicalScores.length - 1]?.buy;
-      const isFreshBuyTrigger = prevDayBuyTotal !== undefined && prevDayBuyTotal <= 30 && totalBuyScore > 30;
-      const isPersistentBuyZone = prevDayBuyTotal !== undefined && prevDayBuyTotal > 30 && totalBuyScore > 30;
-
-      if (isPersistentBuyZone && !isFreshBuyTrigger) {
-        adjustedBuySignal = { text: '續抱（不追高）', color: 'text-sky-300' };
-      }
-
-      const isStrongSell = totalSellScore > 50 || (!is3231 && fibo.l618 && p < fibo.l618);
-      const isSwingExit = totalSellScore > 42; // 波段了結區（每約 3~4 個月一次）
-      if (isStrongSell) {
+    if (is2301 && twoSignal) {
+      // 2301 三態提示：清空 > 補張 > 觀察（清空優先，因為賣訊是稀有事件）
+      const t = twoSignal;
+      if (t.isSellToday) {
         tradeTiming = {
-          text: '今日該賣 (真的該賣)',
-          detail: '賣分達清倉門檻(>50)、跌破關鍵支撐、或高檔回落確認 — 真正危險點。建議出清「交易部位」鎖利；若有長線核心部位可續抱，破線(l618)則全數退出。',
+          text: '★ 今日全部清空',
+          detail: `賣分 ${t.sellScore.toFixed(1)} 已達 ${TWO_SELL_LV} 分門檻，手上持股全部出清、不分批。`
+            + `全期 ${t.stats.rounds} 輪平倉、勝率 ${t.stats.winRate.toFixed(0)}%、每輪平均 ${t.stats.avgRet >= 0 ? '+' : ''}${t.stats.avgRet.toFixed(2)}%。`
+            + (t.ref.lots > 0 ? `　參考持倉 ${t.ref.lots} 張、均價 ${t.ref.avg.toFixed(1)}、浮動 ${t.ref.floatPct >= 0 ? '+' : ''}${t.ref.floatPct.toFixed(2)}%。` : ''),
           color: 'text-rose-300',
           bgClass: 'bg-rose-500/20 border-rose-500/40'
         };
-      } else if (isSwingExit) {
+      } else if (t.targetLots >= 1) {
         tradeTiming = {
-          text: '波段了結 (分批減碼)',
-          detail: '賣分達了結門檻(>42)，每約 3~4 個月一次的鎖利時機。建議分批減碼(賣 1/3~1/2)、保留核心部位續抱趨勢、勿加碼 — 回測此做法可把長期報酬從 +479% 拉到約 +771%。',
-          color: 'text-orange-300',
-          bgClass: 'bg-orange-500/20 border-orange-500/40'
-        };
-      } else if (isFreshBuyTrigger) {
-        tradeTiming = {
-          text: '今日可買',
-          detail: 'Buy 分數由下往上突破 30，視為新買點，建議下一交易日開盤進場。',
+          text: `★ 應持有 ${t.targetLots} 張`,
+          detail: `買分 ${t.buyScore.toFixed(1)}（區間 ${TWO_BUY_LV + (t.targetLots - 1) * TWO_STEP}~${t.targetLots >= 10 ? 100 : TWO_BUY_LV + t.targetLots * TWO_STEP - 1} 分）對應應持有 ${t.targetLots} 張。`
+            + `手上不足就補足差額 —— 這是下限，買分之後下降不需要賣。`
+            + `　下一階需買分 ≥ ${t.needForNext}（還差 ${t.gapToNext.toFixed(1)} 分）。`
+            + `　距清空門檻還差 ${t.gapToSell.toFixed(1)} 分。`,
           color: 'text-emerald-300',
           bgClass: 'bg-emerald-500/20 border-emerald-500/40'
         };
-      } else if (isPersistentBuyZone) {
+      } else {
         tradeTiming = {
-          text: '續抱不追高',
-          detail: '仍在買區但非新突破，先抱不加碼，等下一次新觸發。',
-          color: 'text-sky-300',
-          bgClass: 'bg-sky-500/20 border-sky-500/40'
+          text: '觀察（未達買區、未達清空）',
+          detail: `買分 ${t.buyScore.toFixed(1)}（需 ≥ ${TWO_BUY_LV} 才有第 1 張，還差 ${t.gapToNext.toFixed(1)} 分）；`
+            + `賣分 ${t.sellScore.toFixed(1)}（需 ≥ ${TWO_SELL_LV} 才清空，還差 ${t.gapToSell.toFixed(1)} 分）。`
+            + `已持有的張數繼續抱著等賣訊，不因買分下降而賣出。`,
+          color: 'text-neutral-300',
+          bgClass: 'bg-neutral-500/20 border-neutral-500/40'
         };
-      } else if (totalBuyScore > 22) {
+      }
+    } else if (!is3231 && sixSignal) {
+      // 6669 V25 三態提示：減碼 > 買進 > 不動（減碼優先，因為過熱風險先於機會）
+      const s = sixSignal;
+      if (bias > 40) {
         tradeTiming = {
-          text: '觀察分批',
-          detail: '接近買區，先觀察，等突破 30 再進場會更精準。',
+          text: '★ 今日減碼 1/2',
+          detail: `季線乖離 ${bias.toFixed(1)}% 已超過 40%（極端過熱）。歷史上此區間出現後 20 日內 100% 下跌、40 日平均 −11.7%，價格位階 91.3（賣在區間頂部）。建議減碼一半，保留核心部位。全期僅出現 2 次。`,
+          color: 'text-rose-300',
+          bgClass: 'bg-rose-500/20 border-rose-500/40'
+        };
+      } else if (bias > TRIM_LV) {
+        tradeTiming = {
+          text: '★ 今日減碼 1/3',
+          detail: `季線乖離 ${bias.toFixed(1)}% 已超過 ${TRIM_LV}%。歷史上此訊號後 40 日平均 −2.8%（基準 +7.9%），價格位階 79.2，7 次減碼平均帳面獲利 +82%。建議減碼 1/3、保留核心續抱趨勢，不要清倉。`,
+          color: 'text-orange-300',
+          bgClass: 'bg-orange-500/20 border-orange-500/40'
+        };
+      } else if (s.isBuyToday) {
+        tradeTiming = {
+          text: '★ 今日買進',
+          detail: `RSI ${last.rsiVal?.toFixed(1)} 首次跌破 ${RSI_BUY_LV}，且距上次買進訊號已滿 ${BUY_GAP} 個交易日。歷史上此訊號後 40 日平均 +17.6%（基準 +7.8%）、勝率 76%、買在周邊區間低 29%。建議下一交易日開盤買入固定股數。`,
+          color: 'text-emerald-300',
+          bgClass: 'bg-emerald-500/20 border-emerald-500/40'
+        };
+      } else if (s.rsiReady && s.gapLeft > 0) {
+        tradeTiming = {
+          text: `⏸ RSI 已達標，需再等 ${s.gapLeft} 個交易日`,
+          detail: `RSI ${last.rsiVal?.toFixed(1)} < ${RSI_BUY_LV}，但距上次買進訊號（${s.lastBuyDate}）僅 ${s.daysSinceBuy} 個交易日，未滿 ${BUY_GAP} 日的最小間隔。此限制是為了把頻率控制在每月最多一次並維持訊號品質。`,
           color: 'text-cyan-300',
           bgClass: 'bg-cyan-500/20 border-cyan-500/40'
+        };
+      } else if (bias > WARN_LV) {
+        tradeTiming = {
+          text: '預警：接近減碼區',
+          detail: `季線乖離 ${bias.toFixed(1)}% 已進入 ${WARN_LV}~${TRIM_LV}% 預警帶。此區間本身不執行動作（歷史上減碼後 40 日 −0.2%，弱於 30% 那一級）。再漲到乖離 ${TRIM_LV}%（約 ${last.ma60 ? Math.round(last.ma60 * (1 + TRIM_LV / 100)).toLocaleString() : '--'}）才減碼。`,
+          color: 'text-amber-300',
+          bgClass: 'bg-amber-500/20 border-amber-500/40'
+        };
+      } else {
+        tradeTiming = {
+          text: '不動',
+          detail: `買進需 RSI < ${RSI_BUY_LV}（目前 ${last.rsiVal?.toFixed(1)}），減碼需季線乖離 > ${TRIM_LV}%（目前 ${bias.toFixed(1)}%）。兩邊都未觸發，續抱。歷史頻率：買 3.1 次/年、減碼 1.0 次/年，多數日子都是不動。`,
+          color: 'text-neutral-300',
+          bgClass: 'bg-neutral-500/20 border-neutral-500/40'
         };
       }
     } else if (is3231) {
@@ -1811,8 +2284,10 @@ const App = () => {
       }
     }
 
-    return { 
+    return {
       last, prev, fibo, sPerc, maxPrice, minPrice, bias, maSlope, isBroken, fiboValid: fiboValid,
+      sixSignal, // 6669 V25 訊號狀態（由資料推算，無需本機記錄）
+      twoSignal, // 2301 目標持倉制狀態（由資料推算，無需本機記錄）
       fiboMaxScore: fiboMaxScore, // 傳遞 FIBO 最大分數，用於顯示
       kdMaxScore: kdMaxScore, // 傳遞 KD 最大分數，用於顯示
       rsiMaxScore: rsiMaxScore, // 傳遞 RSI 最大分數，用於顯示
@@ -1941,7 +2416,7 @@ const App = () => {
         <span className="font-mono shrink-0">{Math.round(score)} / {maxScore}</span>
       </div>
       <div className="w-full bg-neutral-800 h-1 sm:h-1.5 rounded-full overflow-hidden">
-        <div className={`h-full ${colorClass} transition-all duration-500`} style={{width: `${Math.min(100, (score/maxScore)*100)}%`}}></div>
+        <div className={`h-full ${colorClass} transition-all duration-500`} style={{width: `${maxScore > 0 ? Math.min(100, (score / maxScore) * 100) : 0}%`}}></div>
       </div>
     </div>
   );
@@ -1958,7 +2433,9 @@ const App = () => {
       val: `${analysis?.sPerc?.toFixed(1) ?? '--'}%`, 
       desc: is3231
         ? '不列入評分。短線操作專注轉折，不依賴歷史位階。'
-        : '比較今日漲速與歷史排名。拆解為「位階」與「動能」給分。', 
+        : is2301
+        ? '⚪ 不列入評分。2301 篩選時斜率PR低的測試期邊際為 −0.457pp（訓練 −0.457／測試 +1.455 不同向），未通過兩期同向檢定。僅供參考。'
+        : '⚪ 不列入評分（V25）。實測兩期邊際接近 0，混入評分會稀釋訊號。僅供參考。',
       info: is3231
         ? `不列入評分 (3231 短線波段版)\n\n3231 策略專注短線轉折指標（RSI、KD、BB），\n不依賴歷史位階判斷，因此斜率不列入評分。\n\n(僅供參考，不影響總分計算)`
         : `權重：20% (位階15+動能5)\n\n【買入評分 - 線性給分】\n● PR < 10: 15-10分 (線性，PR越低分數越高)\n● PR 10-25: 10-5分 (線性分配)\n● PR 25-40: 5-0分 (線性分配)\n● 動能: 向上勾頭且有位階分才觸發 +5分\n\n【賣出評分 - 線性給分】\n● PR > 90: 10-15分 (線性，PR越高分數越高)\n● PR 75-90: 5-10分 (線性分配)\n● PR 60-75: 0-5分 (線性分配)\n● 動能: 向下勾頭且有位階分才觸發 +5分`,
@@ -1973,7 +2450,9 @@ const App = () => {
       val: analysis ? `$${Math.round(is3231 ? (analysis.last.ma20 || 0) : analysis.last.ma60).toLocaleString()}` : '--', 
       desc: is3231
         ? `動能權重 ${analysis?.maMaxScore || 10}%。月線代表短期成本。負乖離過大即買，正乖離過大即賣。`
-        : '趨勢權重 7%。季線代表中期成本。價格在季線上且乖離適中為最佳。', 
+        : is2301
+        ? '🟢🔴 雙向核心。買方：MA120/60/20/10/5 負乖離共佔 35.7%（最大族群，MA120 負乖離是最強單一因素 +5.958pp）。賣方：MA60/120 正乖離佔 18.2%。'
+        : '🔴 賣出評分的唯一因素（100%）。季線乖離 > 30% 減碼 1/3、> 40% 減碼 1/2、> 22% 預警。',
       info: is3231
         ? `權重：${analysis?.maMaxScore || 10}% (短線波段版，MA20月線)\n目前乖離率：${analysis?.bias?.toFixed(2)}%\n\n【買入評分 - 只看負乖離】\n● bias < -6%：10分 (急跌超賣區，滿分)\n● -6% <= bias < -3%：6分 (顯著負乖離)\n● -3% <= bias <= 0%：3分 (回測支撐)\n● bias > 0%：0分 (無便宜可撿)\n\n【賣出評分 - 正乖離 + 跌破】\n● bias > +8%：10分 (急漲超買區，滿分)\n● +4% < bias <= +8%：6分 (獲利警戒區)\n● bias <= +4%：0分 (續抱)\n● 跌破月線：至少 3分 (停利/停損)`
         : `權重：7% (趨勢+位階)\n目前乖離率：${analysis?.bias?.toFixed(2)}%\n季線斜率：${analysis?.maSlope > 0 ? '上揚' : '下彎'}\n\n【買入評分】\n● 趨勢: 斜率>0 (+3)\n● 位階: 乖離0-5% (+4), 5-10% (+2), 假跌破 (+1)\n● 破位: 0分\n\n【賣出評分】\n● 轉弱: 斜率<0 (+3)\n● 過熱: 乖離>25% (+4), >15% (+2)\n● 破位: 跌破3天 (+3)`,
@@ -1988,7 +2467,9 @@ const App = () => {
       val: analysis ? Math.round(analysis.last.rsiVal) : '--', 
       desc: is3231
         ? `核心權重 ${analysis?.rsiMaxScore || 25}%。短線震盪指標。RSI<30 極度超賣滿分，RSI>75 直接賣出。背離直接滿分。`
-        : `震盪權重 ${analysis?.rsiMaxScore || 10}%。反映市場情緒。低檔 (<60) 適合佈局，高檔 (>40) 適合調節。`, 
+        : is2301
+        ? '🟢🔴 賣方最大族群。賣方：RSI21/14/9/5 高檔（＋K9/K5）合計 54.5%，是清空訊號的主體。買方只用 RSI5 低檔（7.1%）—— RSI14/21 低檔在 2301 測試期轉負（−0.370／−0.032pp）已剔除。'
+        : '🟢 買進評分的唯一因素（100%）。RSI < 30 為買點（另需距上次買訊滿 21 交易日）。買後 40 日平均 +17.6%，基準 +7.8%。',
       info: is3231
         ? `權重：${analysis?.rsiMaxScore || 25}% (短線波段版，核心震盪指標)\n\n【買入評分 - 階梯式】\n● RSI < 30：15分 (極度超賣區)\n● 30 <= RSI < 45：5分 (弱勢整理區)\n● RSI >= 45：0分 (無便宜可撿)\n\n【底背離加分】\n● 價格背離：直接滿分 25分 (強力買訊)\n\n【賣出評分 - 階梯式】\n● RSI > 75：25分 (極度超買，直接滿分賣出)\n● 60 < RSI <= 75：10分 (相對高檔，分批調節)\n● RSI <= 60：0分 (安全區，續抱)\n\n【頂背離加分】\n● 價格背離：直接滿分 25分 (假突破，強力賣訊)\n\n(移除突破/跌破50加分，短線操作不等待)`
         : `權重：${analysis?.rsiMaxScore || 10}%\n\n【買入評分】\n● RSI < 60 開始給分，< 30 滿分\n● 突破50：+2分\n● 底背離：+3分\n\n【賣出評分】\n● RSI > 40 開始給分，> 80 滿分\n● 跌破50：+2分`,
@@ -2003,7 +2484,9 @@ const App = () => {
       val: analysis ? `K:${Math.round(analysis.last.k)}` : '--', 
       desc: is3231
         ? `核心權重 ${analysis?.kdMaxScore || 25}%。短線轉折指標。K<20 極度超賣滿分，K>80 直接賣出。無鈍化保護，有賺就跑。`
-        : `震盪權重 ${analysis?.kdMaxScore || 10}%。K值反應靈敏。K<20 強力買訊，K>80 若鈍化則不賣。`, 
+        : is2301
+        ? '🟢🔴 雙向。買方：K9 低檔 + K5 低檔佔 14.3%（震盪超賣族群 21.4% 的一部分）。賣方：K9 高檔 + K5 高檔佔 18.2%。'
+        : '⚪ 不列入評分（V25）。KD 低檔與 RSI 低檔統計上等價（+8.45 vs +8.62pp），為避免重複計分只採用 RSI。僅供參考。',
       info: is3231
         ? `權重：${analysis?.kdMaxScore || 25}% (短線波段版，核心轉折指標)\n\n【買入評分 - 階梯式】\n● K < 20：15分 (極度超賣區)\n● 20 <= K < 30：5分 (超賣邊緣)\n● K >= 30：0分 (位階不夠低)\n\n【金叉訊號】\n● K < 50 時金叉：+10分 (確認動能翻多)\n● K >= 50 時金叉：0分 (高檔金叉，利潤不足)\n\n【背離加分】\n● 價格背離：直接滿分 25分 (強力買訊)\n\n【賣出評分 - 只看位階】\n● K > 80：25分 (極度超買，直接滿分賣出)\n● 70 < K <= 80：15分 (警戒區，分批調節)\n● K <= 70：0分 (安全區，續抱)\n\n(不等待死叉，無鈍化保護)`
         : `權重：${analysis?.kdMaxScore || 10}% (位階+訊號)\n\n【買入】\n● K<20 (4分), 20-40 (2分)\n● 低檔金叉 (+6), 中低檔 (+3)\n● 背離 (滿分)\n\n【賣出】\n● K>80 (3分), 70-80 (1分)\n● 高檔死叉 (+7), 中高檔 (+4)\n● 鈍化保護: 0分`,
@@ -2015,7 +2498,9 @@ const App = () => {
       val: analysis ? `%B:${analysis.last.pctB?.toFixed(2)}` : '--', 
       desc: is3231 
         ? `波動權重 ${bbWeight}%。短線波段策略。%B < 0 超跌滿分，> 1.0 突破上軌滿分。有賺就跑，不設保護。`
-        : `波動權重 ${bbWeight}%。%B < 0 極端超跌，> 1.1 極端乖離。引入開口與爆量保護。`, 
+        : is2301
+        ? '🔴 賣方因素（9.09%）。布林20 高檔與箱型高位合計 18.2%（相對位置族群）。%B ≥ 1.0 給滿分。買方側的布林低檔在 2301 測試期轉負（−0.841pp）已剔除。'
+        : '⚪ 不列入評分（V25）。實測 %B > 1.0 對頂部預測力低於基準（lift 0.91）。僅供參考。',
       info: is3231
         ? `權重：${bbWeight}% (短線波段策略)\n\n【買入評分】\n● %B < 0：超跌滿分 (30分)\n● %B < 0.1：極限接近下軌 (25分)\n● %B < 0.3：相對低檔 (10分)\n\n【賣出評分】\n● %B > 1.0：突破上軌滿分 (30分)\n● %B > 0.9：接近上軌壓力 (25分)\n● 假突破：上攻失敗 (20分)\n\n(移除爆量保護，有賺就跑)`
         : `權重：${bbWeight}% (%B策略)\n\n【買入評分】\n● %B < 0：極端超賣 (3分)\n● %B < 0.1：下軌支撐 (2分)\n● 回測中軌：強勢回檔 (2分)\n\n【賣出評分】\n● %B > 1.1：懸空噴出 (3分)\n● %B > 1.0：突破上軌 (1分)\n● 假突破：(2分)\n● 保護：爆量打開開口 -> 0分`,
@@ -2030,7 +2515,9 @@ const App = () => {
       val: analysis ? analysis.last.macd.toFixed(2) : '--', 
       desc: is3231
         ? `輔助權重 ${analysis?.macdMaxScore || 5}%。動能止跌確認。紅柱收斂即給分，不等待交叉。短線快進快出。`
-        : `趨勢權重 ${analysis?.macdMaxScore || 7}%。柱狀體 (OSC) 代表動能。捕捉轉折點。`, 
+        : is2301
+        ? '⚪ 不列入評分。MACD 紅柱收斂在 1402 上有效，但在 2301 上實測 −1.48pp（訓練 +0.221／測試 −1.480）是有害因素，已明確剔除。綠柱收斂 −0.904pp 同樣無效。僅供參考。'
+        : '⚪ 不列入評分（V25）。綠柱收斂 lift 1.00（完全無效），賣出側訓練 +0.50／測試 −2.20pp。僅供參考。',
       info: is3231
         ? `權重：${analysis?.macdMaxScore || 5}% (短線波段版，輔助濾網)\n\n【買入評分 - 止跌確認】\n● 黃金交叉 (OSC 負轉正)：5分 (滿分，動能翻多)\n● 紅柱收斂 (OSC < 0 且收斂)：3分 (止跌訊號，重點)\n● 紅柱擴大：0分 (殺盤持續)\n\n【賣出評分 - 上攻無力】\n● 死亡交叉 (OSC 正轉負)：5分 (滿分，動能翻空)\n● 綠柱收斂 (OSC > 0 且收斂)：3分 (上攻無力，獲利了結預警)\n● 綠柱擴大：0分 (主升段，續抱)\n\n(不求全拿，只要 3 分配合其他指標即可)`
         : `權重：${analysis?.macdMaxScore || 7}%\n\n【買入評分 (Max 7)】\n● 紅柱收斂 (轉強): +3\n● 零軸金叉 (確認): +2\n● 底背離 (破底翻): +2\n\n【賣出評分 (Max 7)】\n● 綠柱收斂 (轉弱): +3\n● 零軸死叉 (確認): +2\n● 頂背離 (拉高出貨): +2`,
@@ -2045,7 +2532,9 @@ const App = () => {
       val: analysis ? Math.round(analysis.last.adx) : '--', 
       desc: is3231
         ? '不列入評分。短線操作不依賴趨勢強度指標，專注轉折訊號。'
-        : '趨勢權重 6%。ADX 數值代表趨勢強度。數值越高代表趨勢越明確。', 
+        : is2301
+        ? '⚪ 不列入評分。2301 篩選中 +DI>-DI 邊際 +0.004pp、-DI>+DI 邊際 +0.006pp，兩者皆等於零，且未通過兩期同向。僅供參考。'
+        : '⚪ 不列入評分（V25）。賣出側訓練邊際 −16.24pp（全部因素中最差）。僅供參考。',
       info: is3231
         ? `不列入評分 (3231 短線波段版)\n\n3231 策略專注短線轉折指標（RSI、KD、BB），\n不依賴趨勢強度判斷，因此 DMI 不列入評分。\n\n(僅供參考，不影響總分計算)`
         : `權重：6%\n\n【買入評分】\n● 方向：+DI > -DI (+2), 金叉 (+1)\n● 強度：ADX > 25 且向上 (+3)\n● 過熱扣分：ADX > 50 (-1)\n\n【賣出評分】\n● 方向：-DI > +DI (+2), 死叉 (+1)\n● 強度：ADX > 25 且向上 (+3)`,
@@ -2143,7 +2632,9 @@ const App = () => {
       },
       desc: is3231 
         ? `短線權重 ${fiboWeight}%。20日箱型策略。`
-        : `最高權重 ${fiboWeight}%。`, 
+        : is2301
+        ? '⚪ 不列入評分。2301 改用「自 10/20/60 日高點回落」（買方 21.4%）與「箱型高位／自 60 日低點反彈」（賣方 27.3%）來表達相對位置，這些因素通過兩期同向檢定；Fibo 位階未列入。僅供參考。'
+        : '⚪ 不列入評分（V25）。買進側兩期邊際 +0.45／+1.63pp；賣出側 1.272 在 7 年內僅觸及 1 次、1.618 為 0 次。破線停損亦已移除。僅供參考。',
       info: is3231
         ? `權重：${fiboWeight}% (短線波段版，20日箱型)\n價格位於箱型下半部即給分，極簡化階梯式評分。\n\n【買入評分 - 階梯式】\n● 價格 > l500：0分 (上半部壓力區)\n● l786 < 價格 <= l500：3分 (下半部安全區)\n● 價格 <= l786：5分 (底部超跌區)\n\n【賣出評分 - 階梯式】\n● 最高價 >= ext1272：5分 (短線噴出)\n● 最高價 >= maxPrice：3分 (創新高)\n● 價格 < maxPrice：0分 (未突破)`
         : `權重：${fiboWeight}% (最高)\n依據最近趨勢腿 (Impulse Leg) 計算。0.382 為最佳回檔買點。\n\n【買入評分 - 線性給分】\n基礎分數（依價格區間線性分配）：\n● > 0.236：5-10分 (線性分配)\n● 0.236-0.382：20-25分 (線性，0.382最高25分)\n● 0.382-0.5：15-20分 (線性分配)\n● 0.5-0.618：10-15分 (線性分配)\n● < 0.618 (破線)：0分\n\nK線型態修正（加減分）：\n● 止跌確認：+10分 (收盤價 > 開盤價 且 > 前日收盤價)\n● 下影線：+8分 (下影線 > 實體 且 最低價 <= 0.382)\n● 量縮：+5分 (成交量 < 5日均量 × 0.7)\n● 殺盤：-10分 (收盤價 < 開盤價 且 實體 > ATR × 1.5)\n\n最終分數 = 基礎分數 + 修正分數（限制在 0-35 分）\n\n【賣出評分】\n● 最高價 >= 1.618：獲利滿足 35分\n● 最高價 >= 1.272：壓力 28分\n● 價格 > 前高：解套賣壓 15分\n● 價格 < 0.618：停損 35分`,
@@ -2348,15 +2839,282 @@ const App = () => {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto mb-5">
+      <div className="max-w-7xl mx-auto mb-5 space-y-3">
+        {/* ── 三態提示（6669：買進 / 減碼 / 不動） ── */}
         <div className={`rounded-2xl border px-4 py-3 sm:px-5 sm:py-4 ${analysis?.tradeTiming?.bgClass || 'bg-neutral-500/20 border-neutral-500/40'}`}>
-          <div className={`text-sm sm:text-base font-black ${analysis?.tradeTiming?.color || 'text-neutral-300'}`}>
-            交易時機：{analysis?.tradeTiming?.text || '今日觀望'}
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
+            <div className={`text-base sm:text-xl font-black ${analysis?.tradeTiming?.color || 'text-neutral-300'}`}>
+              {is3231 ? '交易時機：' : '今日動作：'}{analysis?.tradeTiming?.text || (is3231 ? '今日觀望' : '不動')}
+            </div>
+            {is2301 && analysis?.twoSignal && (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] sm:text-xs font-mono">
+                <span className="text-neutral-500">
+                  買分 <span className={`font-bold text-sm ${analysis.twoSignal.targetLots > 0 ? 'text-emerald-400' : 'text-neutral-200'}`}>
+                    {analysis.twoSignal.buyScore.toFixed(1)}
+                  </span>
+                  <span className="ml-1">▸ 應持有 {analysis.twoSignal.targetLots} 張</span>
+                </span>
+                <span className="text-neutral-500">
+                  賣分 <span className={`font-bold text-sm ${analysis.twoSignal.isSellToday ? 'text-rose-400' : analysis.twoSignal.sellScore >= 70 ? 'text-amber-400' : 'text-neutral-200'}`}>
+                    {analysis.twoSignal.sellScore.toFixed(1)}
+                  </span>
+                  <span className="ml-1">▸ 清空需 ≥ 80</span>
+                </span>
+              </div>
+            )}
+            {is6669 && analysis && (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] sm:text-xs font-mono">
+                <span className="text-neutral-500">
+                  RSI <span className={`font-bold text-sm ${analysis.last.rsiVal < 30 ? 'text-emerald-400' : 'text-neutral-200'}`}>
+                    {analysis.last.rsiVal?.toFixed(1) ?? '--'}
+                  </span>
+                  <span className="ml-1">▸ 買進需 &lt; 30</span>
+                </span>
+                <span className="text-neutral-500">
+                  乖離 <span className={`font-bold text-sm ${analysis.bias > 30 ? 'text-rose-400' : analysis.bias > 22 ? 'text-amber-400' : 'text-neutral-200'}`}>
+                    {analysis.bias?.toFixed(1) ?? '--'}%
+                  </span>
+                  <span className="ml-1">▸ 減碼需 &gt; 30%</span>
+                </span>
+              </div>
+            )}
           </div>
-          <div className="text-xs sm:text-sm text-neutral-300 mt-1">
+          <div className="text-xs sm:text-sm text-neutral-300 mt-2 leading-relaxed">
             {analysis?.tradeTiming?.detail || '訊號不足，先等待更明確時機。'}
           </div>
+          {is6669 && analysis?.sixSignal && (
+            <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2.5 pt-2.5 border-t border-white/10 text-[10px] sm:text-[11px] text-neutral-400 font-mono">
+              {analysis.sixSignal.lastBuyDate && (
+                <span>上次買訊 {analysis.sixSignal.lastBuyDate} @{Math.round(analysis.sixSignal.lastBuyPrice).toLocaleString()}
+                  <span className="text-neutral-600"> （{analysis.sixSignal.daysSinceBuy} 個交易日前）</span>
+                </span>
+              )}
+              {analysis.sixSignal.lastTrimDate && (
+                <span>上次減碼訊號 {analysis.sixSignal.lastTrimDate} @{Math.round(analysis.sixSignal.lastTrimPrice).toLocaleString()}</span>
+              )}
+              <span className="text-neutral-600">
+                全期訊號：買 {analysis.sixSignal.buyCount} 次／減碼 {analysis.sixSignal.trimCount} 次
+              </span>
+            </div>
+          )}
         </div>
+
+        {/* ── 觸發價位表（僅 6669） ── */}
+        {is6669 && analysis?.sixSignal && (
+          <div className="rounded-2xl border border-neutral-700 bg-neutral-900/70 px-4 py-3 sm:px-5 sm:py-4">
+            <div className="flex items-baseline justify-between mb-2.5">
+              <div className="text-[11px] sm:text-xs font-black text-neutral-400 uppercase tracking-wider">觸發價位</div>
+              <div className="text-[10px] sm:text-[11px] text-neutral-500 font-mono">
+                季線 {analysis.last.ma60 ? Math.round(analysis.last.ma60).toLocaleString() : '--'}
+                <span className="text-neutral-600">（每日變動，價位隨之重算）</span>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              {analysis.sixSignal.levels.map((L) => (
+                <div key={L.lv}
+                  className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs sm:text-sm ${
+                    L.hit ? 'bg-rose-500/15 border border-rose-500/40'
+                          : L.lv === 22 ? 'bg-amber-500/5 border border-amber-500/20'
+                          : 'bg-neutral-800/60 border border-neutral-700/60'}`}>
+                  <span className={`shrink-0 ${L.lv === 22 ? 'text-amber-300' : L.lv === 30 ? 'text-orange-300' : 'text-rose-300'} font-bold`}>
+                    乖離 {L.lv}%
+                  </span>
+                  <span className="text-neutral-400 text-[10px] sm:text-xs flex-1 text-center hidden sm:block">{L.label}</span>
+                  <span className="font-mono font-bold text-neutral-100 shrink-0">
+                    ${L.price ? Math.round(L.price).toLocaleString() : '--'}
+                  </span>
+                  <span className={`font-mono shrink-0 w-16 text-right ${L.gap > 0 ? 'text-neutral-400' : 'text-rose-400'}`}>
+                    {L.gap !== null ? `${L.gap > 0 ? '+' : ''}${L.gap.toFixed(1)}%` : '--'}
+                  </span>
+                </div>
+              ))}
+              {/* 買進條件：RSI 無固定價位，改顯示近 5 日走勢 */}
+              <div className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs sm:text-sm bg-emerald-500/5 border border-emerald-500/20">
+                <span className="text-emerald-300 font-bold shrink-0">RSI &lt; 30</span>
+                <span className="text-neutral-400 text-[10px] sm:text-xs flex-1 text-center hidden sm:block">★ 買進固定股數</span>
+                <span className="font-mono text-[10px] sm:text-xs text-neutral-400 shrink-0">
+                  近5日 {analysis.sixSignal.rsiTrend.map(t => t.rsi?.toFixed(0) ?? '-').join(' → ')}
+                </span>
+              </div>
+            </div>
+            <div className="text-[10px] text-neutral-500 mt-2.5 leading-relaxed">
+              動能指標無固定價位。買進另需距上次買訊滿 21 個交易日（約 1 個月）；
+              減碼訊號在同一波只觸發一次，須待乖離跌回 18% 以下才重新啟用。
+            </div>
+          </div>
+        )}
+
+        {/* ── 2301：張數計算 + 階梯對照表 ── */}
+        {is2301 && analysis?.twoSignal && (() => {
+          const T = analysis.twoSignal;
+          const held = lots2301 === '' ? null : Math.max(0, parseInt(lots2301, 10) || 0);
+          const toBuy = held === null ? null : Math.max(0, T.targetLots - held);
+          const px = analysis.last.price;
+          return (
+            <div className="rounded-2xl border border-neutral-700 bg-neutral-900/70 px-4 py-3 sm:px-5 sm:py-4">
+              {/* 上排：應持有 / 手動輸入 / 該補幾張 */}
+              <div className="flex flex-wrap items-center gap-3 sm:gap-5 mb-3">
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-neutral-500 uppercase tracking-wider">應持有</span>
+                  <span className={`text-3xl sm:text-4xl font-black leading-none ${T.targetLots > 0 ? 'text-emerald-400' : 'text-neutral-500'}`}>
+                    {T.targetLots}<span className="text-sm font-bold text-neutral-500 ml-1">張</span>
+                  </span>
+                </div>
+                <div className="text-neutral-600 text-2xl font-thin hidden sm:block">−</div>
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-neutral-500 uppercase tracking-wider">你手上有</span>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setLots2301(String(Math.max(0, (held ?? 0) - 1)))}
+                      className="w-7 h-7 rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-300 font-bold hover:bg-neutral-700">−</button>
+                    <input type="number" min="0" value={lots2301} placeholder="0"
+                      onChange={(e) => setLots2301(e.target.value)}
+                      className="w-14 text-center bg-neutral-800 border border-neutral-700 rounded-lg py-1 text-lg font-black text-neutral-100 font-mono focus:outline-none focus:border-emerald-500" />
+                    <button onClick={() => setLots2301(String((held ?? 0) + 1))}
+                      className="w-7 h-7 rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-300 font-bold hover:bg-neutral-700">+</button>
+                  </div>
+                </div>
+                <div className="text-neutral-600 text-2xl font-thin hidden sm:block">=</div>
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-neutral-500 uppercase tracking-wider">
+                    {T.isSellToday ? '今日動作' : '該補'}
+                  </span>
+                  {T.isSellToday ? (
+                    <span className="text-2xl sm:text-3xl font-black leading-none text-rose-400">
+                      全部清空{held ? ` ${held} 張` : ''}
+                    </span>
+                  ) : (
+                    <span className={`text-3xl sm:text-4xl font-black leading-none ${toBuy ? 'text-emerald-400' : 'text-neutral-500'}`}>
+                      {toBuy === null ? '--' : toBuy}
+                      <span className="text-sm font-bold text-neutral-500 ml-1">張</span>
+                      {toBuy > 0 && (
+                        <span className="text-[11px] font-mono text-neutral-400 ml-2">
+                          ≈ ${Math.round(toBuy * px * 1000 * 1.001425).toLocaleString()}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="text-[10px] sm:text-[11px] text-amber-300/80 mb-3 leading-relaxed border-l-2 border-amber-500/40 pl-2">
+                「應持有」是<strong>下限</strong>，不是目標值。買分之後下降<strong>不需要賣</strong> ——
+                只有賣分 ≥ {T.thresholds.TWO_SELL_LV} 才全部清空。手上張數不會被記錄，每次自行輸入即可。
+              </div>
+
+              {/* 階梯對照表 */}
+              <div className="flex items-baseline justify-between mb-2">
+                <div className="text-[11px] sm:text-xs font-black text-neutral-400 uppercase tracking-wider">
+                  買分 → 應持有張數
+                </div>
+                <div className="text-[10px] text-neutral-500 font-mono">
+                  公式 floor((買分 − {T.thresholds.TWO_BUY_LV}) / {T.thresholds.TWO_STEP}) + 1
+                </div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                <div className={`rounded-lg px-2 py-1.5 text-center border ${T.targetLots === 0 ? 'bg-neutral-700/40 border-neutral-500' : 'bg-neutral-800/40 border-neutral-700/50'}`}>
+                  <div className="text-[10px] text-neutral-500 font-mono">&lt; {T.thresholds.TWO_BUY_LV}</div>
+                  <div className={`text-sm font-black ${T.targetLots === 0 ? 'text-neutral-200' : 'text-neutral-600'}`}>0 張</div>
+                </div>
+                {T.ladder.map(L => (
+                  <div key={L.lots}
+                    className={`rounded-lg px-2 py-1.5 text-center border ${
+                      L.hit ? 'bg-emerald-500/25 border-emerald-500 ring-1 ring-emerald-400'
+                            : L.cleared ? 'bg-emerald-500/8 border-emerald-500/30'
+                            : 'bg-neutral-800/40 border-neutral-700/50'}`}>
+                    <div className="text-[10px] text-neutral-500 font-mono">{L.from}~{L.to}</div>
+                    <div className={`text-sm font-black ${L.hit ? 'text-emerald-300' : L.cleared ? 'text-emerald-500/70' : 'text-neutral-600'}`}>
+                      {L.lots} 張
+                    </div>
+                    <div className="text-[9px] text-neutral-600 font-mono">{L.days}天</div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-[10px] text-neutral-500 mt-2 leading-relaxed">
+                今日買分 <strong className="text-neutral-300">{T.buyScore.toFixed(1)}</strong>
+                {!T.isSellToday && <> ；下一階需 ≥ <strong className="text-neutral-300">{T.needForNext}</strong> 分（還差 {T.gapToNext.toFixed(1)} 分）</>}
+                　賣分 <strong className="text-neutral-300">{T.sellScore.toFixed(1)}</strong> / {T.thresholds.TWO_SELL_LV}
+                {!T.isSellToday && <>（還差 {T.gapToSell.toFixed(1)} 分）</>}
+                　「天數」為該區間歷史出現的交易日數
+              </div>
+
+              {/* 近 10 日買賣分與應持有 */}
+              <div className="mt-3 pt-3 border-t border-white/10">
+                <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1.5">近 10 日</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[10px] sm:text-[11px] font-mono">
+                    <tbody>
+                      <tr className="text-neutral-500">
+                        <td className="pr-2 text-neutral-600">日期</td>
+                        {T.trend.map(t => <td key={t.date} className="px-1 text-center">{t.date?.slice(5)}</td>)}
+                      </tr>
+                      <tr className="text-neutral-400">
+                        <td className="pr-2 text-neutral-600">收盤</td>
+                        {T.trend.map(t => <td key={t.date} className="px-1 text-center">{Math.round(t.price)}</td>)}
+                      </tr>
+                      <tr className="text-emerald-400">
+                        <td className="pr-2 text-neutral-600">買分</td>
+                        {T.trend.map(t => <td key={t.date} className="px-1 text-center">{t.buy.toFixed(0)}</td>)}
+                      </tr>
+                      <tr className="text-emerald-300 font-bold">
+                        <td className="pr-2 text-neutral-600">應持有</td>
+                        {T.trend.map(t => <td key={t.date} className="px-1 text-center">{t.tgt}</td>)}
+                      </tr>
+                      <tr className="text-rose-400">
+                        <td className="pr-2 text-neutral-600">賣分</td>
+                        {T.trend.map(t => (
+                          <td key={t.date} className={`px-1 text-center ${t.sell >= T.thresholds.TWO_SELL_LV ? 'bg-rose-500/25 font-bold rounded' : ''}`}>
+                            {t.sell.toFixed(0)}
+                          </td>
+                        ))}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* 全期統計 + 參考持倉 */}
+              <div className="mt-3 pt-3 border-t border-white/10 flex flex-wrap gap-x-4 gap-y-1 text-[10px] sm:text-[11px] text-neutral-400 font-mono">
+                <span>全期：買 {T.stats.buyPerYear.toFixed(1)} 次/年、賣 {T.stats.sellPerYear.toFixed(1)} 次/年
+                  <span className="text-neutral-600">（共 {T.stats.actPerYear.toFixed(1)} 動作/年）</span>
+                </span>
+                <span>勝率 <strong className="text-emerald-400">{T.stats.winRate.toFixed(0)}%</strong>
+                  <span className="text-neutral-600">（{T.stats.wins}/{T.stats.rounds} 輪）</span>
+                </span>
+                <span>每輪 <strong className={T.stats.avgRet >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                  {T.stats.avgRet >= 0 ? '+' : ''}{T.stats.avgRet.toFixed(2)}%</strong></span>
+                <span>平均 {T.stats.avgLots.toFixed(1)} 張 / {T.stats.avgDays.toFixed(0)} 日
+                  <span className="text-neutral-600">（最多 {T.stats.maxLots} 張）</span>
+                </span>
+              </div>
+              {T.ref.lots > 0 && (
+                <div className="mt-1.5 text-[10px] sm:text-[11px] text-neutral-500 font-mono">
+                  參考持倉（假設完全照訊號執行，僅供對照）：{T.ref.lots} 張、均價 {T.ref.avg.toFixed(1)}、
+                  成本 ${Math.round(T.ref.cost).toLocaleString()}、
+                  浮動 <strong className={T.ref.floatPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                    {T.ref.floatPct >= 0 ? '+' : ''}{T.ref.floatPct.toFixed(2)}%</strong>、
+                  {T.ref.entryDate} 進場（{T.ref.holdDays} 個交易日）
+                </div>
+              )}
+              {T.recent.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-white/10">
+                  <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1">近期平倉</div>
+                  <div className="space-y-0.5">
+                    {T.recent.map((r, i) => (
+                      <div key={i} className="flex flex-wrap gap-x-3 text-[10px] sm:text-[11px] font-mono text-neutral-400">
+                        <span className="text-neutral-500">{r.entry} → {r.exit}</span>
+                        <span>{r.lots} 張</span>
+                        <span className="text-neutral-500">均價 {r.avg.toFixed(1)} → {r.exitPx.toFixed(1)}</span>
+                        <span className={r.ret >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                          {r.ret >= 0 ? '+' : ''}{r.ret.toFixed(2)}%
+                        </span>
+                        <span className="text-neutral-600">{r.days} 日</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6 mb-12 items-stretch transition-all duration-300">
@@ -2383,7 +3141,9 @@ const App = () => {
             </div>
             <div className="flex-1 sm:pl-6 border-t sm:border-t-0 sm:border-l border-white/5 pt-4 sm:pt-0 w-full sm:w-auto flex flex-col justify-center">
               <div className="flex justify-between items-center border-b border-white/5 pb-1 mb-3">
-                <div className="text-xs text-emerald-400 font-black uppercase">佈局權重分析</div>
+                <div className="text-xs text-emerald-400 font-black uppercase">
+                  {is3231 ? '佈局權重分析' : is2301 ? '買進評分（14 項等權）' : '買進評分（單一因素）'}
+                </div>
                 <button 
                   className="p-1 text-neutral-600 hover:text-white" 
                   onClick={(e) => {
@@ -2391,51 +3151,95 @@ const App = () => {
                     const otherWeight = 100 - 35 - 20 - 20 - bbWeight;
                     const infoText = stockSymbol === '3231' 
                       ? `【評分標準】\n總分 100 由以下加權計算：\n\n1. 布林通道 (30%)：\n   短線波段策略，線性給分。\n   %B < 0：30分 (超跌滿分)\n   0 <= %B < 0.1：30→25分 (線性)\n   0.1 <= %B < 0.3：25→10分 (線性)\n\n2. KD 隨機指標 (25%)：\n   短線轉折指標。\n   K<20 極度超賣滿分，K>80 直接賣出。\n   無鈍化保護，有賺就跑。\n\n3. RSI 相對強弱 (25%)：\n   短線震盪指標。\n   RSI<30 極度超賣滿分，RSI>75 直接賣出。\n   背離直接滿分。\n\n4. MA 乖離 (10%)：\n   MA20月線：負乖離過大搶反彈，正乖離過大獲利了結。\n\n5. FIBO 位階 (5%)：\n   短線波段版，20日箱型。\n   價格 > l500：0分\n   l786 < 價格 <= l500：3分\n   價格 <= l786：5分\n\n6. MACD 動能 (5%)：\n   動能止跌確認。紅柱收斂即給分，不等待交叉。\n\n(註：斜率與 DMI 不列入評分，專注短線轉折)\n\n【買入分數門檻】\n● >38分：強力買進 (Strong Buy)\n   投入 50% 資金。高勝率新買點。\n   這組門檻為「收益優先 + 每月約 3~4 次動作」回測最佳化結果。\n\n● >30分：嘗試進場 (Try Buy)\n   投入 20% 資金。觀察轉強區。\n   適合先試單，待結構確認再加碼。\n\n● <20分：觀望\n   0% 資金。訊號不足，不建議進場。\n\n【霸王條款】\n● 逆勢警告：\n   即使分數 >38（建議買入），但月線斜率 <0 且持續惡化時，\n   會在推薦文字後顯示「(逆勢)」警告。\n   如果斜率在改善（負值縮小），代表趨勢可能轉好，不顯示警告。`
-                      : `【評分標準】\n總分 100 由以下加權計算：\n\n1. FIBO 位階 (35%)：\n   0.382為最高分，各區間內線性分配。\n\n2. 歷史起伏 (20%)：\n   斜率位階低檔 (超跌)，線性給分。\n\n3. 趨勢綜合 (20%)：\n   MA/MACD/DMI 多頭排列。\n\n4. 震盪指標 (20%)：\n   RSI/KD 低檔背離給分。\n\n5. 波動風險 (5%)：\n   觸及布林下軌。\n\n【各階段評語】\n● >30分：強力買進\n   多項指標同步看多，適合積極進場。\n   僅在「今日由下往上突破 >30」時視為新買點。\n   若連續多日都 >30，訊號顯示為「續抱（不追高）」。\n\n● 22~30分：分批佈局\n   趨勢轉強但仍有風險，建議分批買入。\n\n● 20~22分：中性觀察\n   訊號偏弱，建議等待更明確買點。\n\n● <20分：觀望\n   多項指標偏弱，不建議進場。\n\n【霸王條款】\n● 逆勢警告：\n   即使分數 >30（建議買入），但季線斜率 <0 且持續惡化時，\n   會在推薦文字後顯示「(逆勢)」警告。\n   如果斜率在改善（負值縮小），代表趨勢可能轉好，不顯示警告。\n   此設計避免錯過超跌反彈的買點。`;
+                      : stockSymbol === '2301'
+                      ? `【2301 買進評分 — 14 項等權，每項 7.14 分】\n\n族群權重：\n● 均線負乖離 35.7%（5 項）：MA120／MA60／MA20／MA10／MA5 負乖離\n● 自高點回落 21.4%（3 項）：自 60／20／10 日高點回落\n● 跌幅動能 21.4%（3 項）：近 5／3／1 日跌幅\n● 震盪超賣 21.4%（3 項）：K9 低檔／K5 低檔／RSI5 低檔\n\n【買進規則 — 目標持倉制】\n應持有張數 = floor((今日買分 − 4) / 10) + 1，買分 < 4 → 0 張\n\n買分 <4 → 0 張｜4~13 → 1 張｜14~23 → 2 張｜24~33 → 3 張\n34~43 → 4 張｜44~53 → 5 張｜54~63 → 6 張｜64~73 → 7 張\n74~83 → 8 張｜84~93 → 9 張｜94~100 → 10 張\n\n手上不足就補足差額。這是「下限」而非目標值 ——\n買分之後下降不需要賣，只有賣分 ≥ 80 才全部清空。\n\n【為什麼是這 14 項】\n以 2301 自身資料篩選「訓練期／測試期兩期同向為正」的因素，\n25 個候選中有 14 個通過。最強的是 MA120 負乖離\n（邊際 +5.958pp，訓練 +4.354／測試 +14.162）。\n\n實測優於直接沿用 1402 的清單（超額 +7.3pp vs +6.8pp），\n並剔除了兩個對 2301 有害的因素：\n● MACD 紅柱收斂 −1.48pp（在 1402 上有效，在 2301 上有害）\n● 箱型低位 −1.54pp\n以及測試期轉負的 RSI14／RSI21 低檔。\n\n【為什麼是等權而非最佳化權重】\n對 5562 組買方權重做系統性搜尋（全部單因素 + 全部雙因素 +\n全部三因素 + 等權 + 4000 組隨機 Dirichlet），以「訓練期選權重\n→ 測試期驗證」檢驗：\n● 訓練期第一名 → 測試期排名 3592/5562\n● 各共識權重 K=1~500 的測試期表現全部落在 PR 50 附近\n● NNLS 迴歸權重 → 測試期 +0.670pp ＜ 等權 +0.814pp\n→ 買方權重最佳化無效，任何合理的低接組合都差不多，故採族群等權。\n\n【驗證（2015-07 ~ 2026-08，11.1 年，含息還原）】\n● 買 14.3 次/年、賣 4.5 次/年 → 18.8 動作/年（每月 1.6 次）\n● 每輪報酬 +11.96%、勝率 92%（46 勝/4 敗）\n● 賺賠比 2.49、獲利因子 28.62、最差單輪 −5.84%\n● 平均持有 49 日（中位 16、最長 253）、帳面最差 −27%\n● 平均綁住 160 萬、最壞需備 272 萬（10 張）\n● 年損益 62 萬、資金效率 38.7%／年\n● 獲利年 11/12（2024 唯一虧損年）\n● 兩期都正：前半 +5.45%、後半 +13.13%\n● 隨機化 600 次 p = 0.0000\n  （實際 +11.96% vs 隨機平均 +2.14%、600 次最大僅 +4.25%）\n● 高原：鄰域 36 組（買2~8 × 階梯8~12 × 賣77~83）每輪最低 +9.47%\n● 容錯：漏掉 50% 買訊，年損益僅 −10%\n  （因每日重算目標張數，不依賴任何歷史狀態）\n\n【誠實限制】\n排除近期多頭（2015~2022）後：每輪 +6.51%、勝率 93%、\n年損益 29 萬（18.1%／年）。保守預期請用這組數字，\n62 萬是含 2023~2026 多頭的水準。\n\n【停用條件】\n● 不可重新最佳化門檻（4／80／+10 固定）—— 逐年重調實測會失效\n● 連續 2 個完整年度虧損 → 停用\n● 單輪虧損超過 −15% → 人工檢視（歷史最差 −5.84%）`
+                      : `【6669 買進評分 V25 — 單一因素】\n\n評分 = RSI 低檔階梯（權重 100%）\n\n● RSI < 25 → 100 分\n● RSI < 30 → 80 分  ← 買進門檻\n● RSI < 40 → 50 分\n● RSI < 50 → 20 分\n● RSI ≥ 50 → 0 分\n\n【觸發條件】\nRSI 首次跌破 30，且距上次買進訊號滿 21 個交易日\n（約 1 個月，用來把頻率控制在每月最多一次）\n\n【實測品質（2019-07 ~ 2026-08）】\n● 買後 40 日平均 +17.58%（任一天買進的基準是 +7.84%）\n● 邊際 +9.7pp，勝率 76%\n● 價格位階 29.2（買在周邊 ±60 日區間的低 29%）\n● 訊號 22 次 / 7 年 = 3.1 次/年（每 4.0 個月）\n● 逐年 2~4 次，分布均勻（2020:3、2021:3、2022:4、2023:3、2024:3、2025:4、2026:2）\n\n【為什麼只用一個因素】\n對 10 個買進因素做系統性權重搜尋（2607 組，含全部單因素、\n全部雙因素、等權、3000 組隨機 Dirichlet），以「訓練期選權重\n→ 測試期驗證」檢驗：\n● 訓練期邊際 vs 測試期邊際 Spearman ρ = 僅 +0.10\n● 訓練期第一名（深度回檔74+KD26）測試期排名 2168/2607\n● 訓練期前 10 名平均測試邊際 +2.27pp\n  ＜ 全部組合平均 +4.88pp\n  → 依訓練期挑權重比亂選還差\n● 測試期邊際平均：1 因素 +5.62 ＞ 5 因素 +5.02\n  ＞ 2~4 因素 +4.6~4.7 ＞ 10 因素 +3.95\n\n10 個因素中只有 RSI 低檔（訓練 +8.62／測試 +10.20）與\nKD 低檔（+10.72／+8.45）在兩期都有效，其餘 8 個接近 0。\n把無效因素以任何權重混入，只會稀釋稀有訊號的品質。\n\n【門檻穩健性】\nRSI<28 邊際 +11.69pp、<30 +9.74pp、<32 +7.88pp、\n<40 +0.04pp（完全失效）。28~32 為高原，取 30。\n\n【備選】\nKD < 20 統計上等價（+8.45pp，1.9 次/年）。\n若不想押注單一指標可用 RSI50+KD50（+6.89pp），代價約 1.7pp。\n\n【誠實限制】\n樣本僅 22 個訊號，多重比較修正後 p≈0.034（勉強顯著）。\n邊際的真實期望值可能是 +5~7pp 而非 +9.7pp。\n僅適用 6669。`;
                     showInfo(e, 'buy', '買入評分模型', infoText);
                   }}
                 >
                   <Info size={14}/>
                 </button>
               </div>
-              <div className="space-y-3">
-                {renderScoreBar(
-                  `FIBO 位階 (${analysis?.fiboMaxScore || 35}%)`, 
-                  analysis?.scores.fibo.buy || 0, 
-                  analysis?.fiboMaxScore || 35, 
-                  'bg-emerald-500'
-                )}
-                {renderScoreBar(
-                  is3231 ? '歷史起伏 (不列入評分)' : '歷史起伏 (20%)', 
-                  analysis?.scores.slope.buy || 0, 
-                  is3231 ? 0 : 20, 
-                  'bg-emerald-500'
-                )}
-                {renderScoreBar(
-                  is3231 
-                    ? `趨勢綜合 (${(analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5)}%)` 
-                    : `趨勢綜合 (${(analysis?.maMaxScore || 7) + (analysis?.macdMaxScore || 7) + 6}%)`, 
-                  is3231
-                    ? (analysis?.scores.ma.buy + analysis?.scores.macd.buy || 0)
-                    : (analysis?.scores.ma.buy + analysis?.scores.macd.buy + analysis?.scores.dmi.buy || 0), 
-                  is3231
-                    ? ((analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5))
-                    : ((analysis?.maMaxScore || 7) + (analysis?.macdMaxScore || 7) + 6), 
-                  'bg-emerald-500'
-                )}
-                {renderScoreBar(
-                  `震盪指標 (${(analysis?.rsiMaxScore || (is3231 ? 25 : 10)) + (analysis?.kdMaxScore || (is3231 ? 25 : 10))}%)`, 
-                  analysis?.scores.osc.buy || 0, 
-                  (analysis?.rsiMaxScore || (is3231 ? 25 : 10)) + (analysis?.kdMaxScore || (is3231 ? 25 : 10)), 
-                  'bg-emerald-500'
-                )}
-                {renderScoreBar(
-                  `波動風險 (${analysis?.bbMaxScore || (is3231 ? 30 : 5)}%)`, 
-                  analysis?.scores.bb.buy || 0, 
-                  analysis?.bbMaxScore || (is3231 ? 30 : 5), 
-                  'bg-emerald-500'
-                )}
-              </div>
+              {is3231 ? (
+                <div className="space-y-3">
+                  {renderScoreBar(
+                    `FIBO 位階 (${analysis?.fiboMaxScore || 35}%)`,
+                    analysis?.scores.fibo.buy || 0,
+                    analysis?.fiboMaxScore || 35,
+                    'bg-emerald-500'
+                  )}
+                  {renderScoreBar('歷史起伏 (不列入評分)', analysis?.scores.slope.buy || 0, 0, 'bg-emerald-500')}
+                  {renderScoreBar(
+                    `趨勢綜合 (${(analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5)}%)`,
+                    (analysis?.scores.ma.buy + analysis?.scores.macd.buy || 0),
+                    ((analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5)),
+                    'bg-emerald-500'
+                  )}
+                  {renderScoreBar(
+                    `震盪指標 (${(analysis?.rsiMaxScore || 25) + (analysis?.kdMaxScore || 25)}%)`,
+                    analysis?.scores.osc.buy || 0,
+                    (analysis?.rsiMaxScore || 25) + (analysis?.kdMaxScore || 25),
+                    'bg-emerald-500'
+                  )}
+                  {renderScoreBar(
+                    `波動風險 (${analysis?.bbMaxScore || 30}%)`,
+                    analysis?.scores.bb.buy || 0,
+                    analysis?.bbMaxScore || 30,
+                    'bg-emerald-500'
+                  )}
+                </div>
+              ) : is2301 ? (
+                /* 2301：14 項等權，族群拆解 + 因素明細 */
+                <div className="space-y-2.5">
+                  {analysis?.twoSignal?.buyFams.map(F => (
+                    <div key={F.fam}>
+                      {renderScoreBar(`${F.fam} (${F.weight.toFixed(1)}%・${F.n}項)`, F.score, F.weight, 'bg-emerald-500')}
+                    </div>
+                  ))}
+                  <div className="pt-1.5 border-t border-white/5 space-y-0.5 text-[10px] sm:text-[11px] font-mono max-h-64 overflow-y-auto">
+                    {analysis?.twoSignal?.buyFactors.map(f => (
+                      <div key={f.key} className={`flex items-center justify-between px-2 py-0.5 rounded ${
+                        f.score >= 70 ? 'bg-emerald-500/20 text-emerald-300 font-bold'
+                        : f.score > 0 ? 'bg-emerald-500/5 text-neutral-300' : 'text-neutral-600'}`}>
+                        <span className="truncate" title={f.rule}>{f.key}</span>
+                        <span className="shrink-0 ml-2">
+                          {f.score.toFixed(0)}<span className="text-neutral-600">/100</span>
+                          <span className="ml-1.5 text-neutral-500">＋{f.contrib.toFixed(2)}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-neutral-500 pt-1.5 border-t border-white/5 leading-relaxed">
+                    每項滿分 100，貢獻 = 得分 ÷ 14。已剔除 MACD 紅柱收斂（−1.48pp）、
+                    箱型低位（−1.54pp）、RSI14／RSI21 低檔（測試期轉負）。
+                    權重最佳化實測無效（訓練最佳 → 測試排名 3592/5562），故採族群等權。
+                  </div>
+                </div>
+              ) : (
+                /* 6669 V25：單一因素 = RSI 低檔階梯 */
+                <div className="space-y-2.5">
+                  {renderScoreBar('RSI 低檔 (100%)', analysis?.buy.total || 0, 100, 'bg-emerald-500')}
+                  <div className="space-y-1 text-[10px] sm:text-[11px] font-mono">
+                    {[
+                      { lb: 'RSI < 25', sc: 100 }, { lb: 'RSI < 30', sc: 80 },
+                      { lb: 'RSI < 40', sc: 50 }, { lb: 'RSI < 50', sc: 20 }, { lb: 'RSI ≥ 50', sc: 0 }
+                    ].map(t => {
+                      const active = (analysis?.buy.total ?? -1) === t.sc;
+                      return (
+                        <div key={t.lb} className={`flex justify-between px-2 py-0.5 rounded ${
+                          active ? 'bg-emerald-500/20 text-emerald-300 font-bold' : 'text-neutral-500'}`}>
+                          <span>{t.lb}{t.sc === 80 ? '　← 買進門檻' : ''}</span>
+                          <span>{t.sc} 分</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="text-[10px] text-neutral-500 pt-1.5 border-t border-white/5 leading-relaxed">
+                    已移除 FIBO 位階／斜率／MA／MACD／DMI／布林（實測兩期邊際接近 0，混入只會稀釋訊號）。
+                    另需距上次買訊滿 21 交易日。
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -2443,7 +3247,7 @@ const App = () => {
             <div className="flex flex-col items-center justify-center shrink-0 w-full sm:w-1/3 text-center mb-4 sm:mb-0">
               <h3 className="text-rose-500 font-black text-[9px] sm:text-[10px] uppercase tracking-widest mb-2 sm:mb-3">Sell Risk</h3>
               <span className="text-5xl sm:text-6xl md:text-7xl font-black leading-none text-rose-400">{analysis?.sell.total ?? '--'}</span>
-              <div className={`text-sm sm:text-base font-black mt-3 sm:mt-4 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-full ${analysis?.sell?.signal?.color?.includes('rose') ? 'bg-rose-500/30 text-rose-300' : analysis?.sell?.signal?.color?.includes('red') ? 'bg-red-600/40 text-red-200 animate-pulse' : analysis?.sell?.signal?.color?.includes('orange') ? 'bg-orange-500/30 text-orange-300' : 'bg-emerald-500/30 text-emerald-300'} shadow-lg`}>
+              <div className={`text-sm sm:text-base font-black mt-3 sm:mt-4 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-full ${analysis?.sell?.signal?.color?.includes('rose') ? 'bg-rose-500/30 text-rose-300' : analysis?.sell?.signal?.color?.includes('red') ? 'bg-red-600/40 text-red-200 animate-pulse' : analysis?.sell?.signal?.color?.includes('orange') ? 'bg-orange-500/30 text-orange-300' : analysis?.sell?.signal?.color?.includes('amber') ? 'bg-amber-500/30 text-amber-300' : 'bg-emerald-500/30 text-emerald-300'} shadow-lg`}>
                 {analysis?.sell?.signal?.text ?? '--'}
               </div>
               {/* 前5天賣出分數 */}
@@ -2459,58 +3263,118 @@ const App = () => {
             </div>
             <div className="flex-1 sm:pl-6 border-t sm:border-t-0 sm:border-l border-white/5 pt-4 sm:pt-0 w-full sm:w-auto flex flex-col justify-center">
               <div className="flex justify-between items-center border-b border-white/5 pb-1 mb-3">
-                <div className="text-xs text-rose-400 font-black uppercase">風險權重分析</div>
+                <div className="text-xs text-rose-400 font-black uppercase">
+                  {is3231 ? '風險權重分析' : is2301 ? '賣出評分（11 項等權）' : '賣出評分（單一因素）'}
+                </div>
                 <button 
                   className="p-1 text-neutral-600 hover:text-white"
                   onClick={(e) => {
                     const bbWeight = analysis?.bbMaxScore || 5;
                     const infoText = stockSymbol === '3231'
                       ? `【評分標準】\n總分 100 由以下加權計算：\n\n1. 布林通道 (30%)：\n   短線波段策略，線性給分。\n   %B > 1.0：30分 (突破上軌滿分)\n   0.9 < %B <= 1.0：25→30分 (線性)\n   假突破：20分\n   (移除爆量保護，有賺就跑)\n\n2. KD 隨機指標 (25%)：\n   短線轉折指標。\n   K>80 直接滿分賣出，70 < K <= 80 分批調節。\n   無鈍化保護，有賺就跑。\n\n3. RSI 相對強弱 (25%)：\n   短線震盪指標。\n   RSI>75 直接滿分賣出，60 < RSI <= 75 分批調節。\n   頂背離直接滿分。\n\n4. MA 乖離 (10%)：\n   MA20月線：正乖離過大獲利了結，跌破月線停利/停損。\n\n5. FIBO 壓力 (5%)：\n   短線波段版，20日箱型。\n   最高價 >= ext1272：5分\n   最高價 >= maxPrice：3分\n   價格 < maxPrice：0分\n\n6. MACD 動能 (5%)：\n   動能上攻無力，綠柱收斂即給分。\n\n(註：斜率與 DMI 不列入評分，專注短線轉折)\n\n【賣出分數門檻】\n● >60分：清倉賣出 (Clear Out)\n   100% 全跑。過熱與轉弱共振訊號。\n   這組門檻為「收益優先 + 每月約 3~4 次動作」回測最佳化結果。\n\n● >52分：獲利調節 (Trim)\n   賣出 50% 持股。鎖利降風險。\n   先收現金，再等待下一段更明確訊號。\n\n● ≤52分：續抱\n   不動。尚未達到高勝率賣點。`
-                      : `【評分標準 (回測獲利最佳化)】\n總分由以下加權計算：\n\n1. FIBO 壓力 (35%)：\n   接近 1.618 擴展位滿分。\n\n2. 歷史噴發 (20%)：\n   斜率位階 > 90% (過熱)，線性給分。\n\n3. 趨勢乖離 (MA 強化, 最高18分)：\n   季線正乖離分階給分：\n   >30%:15  >22%:11  >15%:7  >10%:4\n\n4. 震盪過熱 (RSI/KD)：\n   高檔鈍化。\n\n5. 波動極端 (5%)：\n   觸及布林上軌。\n\n【高檔回落停利分 (確保該賣會通知)】\n關鍵新元件：近 15 日曾過熱(乖離>15%)後，\n自近 60 日高點回落時加分(上限30)：\n   回落≥18%:30  ≥14%:21  ≥10%:12\n(只在過熱後回落才計，一般小回檔不誤觸)\n\n【兩段式賣出門檻】\n● >50分：清倉賣出 / 今日該賣\n   斐波壓力、破線、或高檔回落確認的\n   真正危險點。回測能在 2026/5-6 等\n   大回落可靠通知，年約 3.9 次。\n\n● 42~50分：波段了結 / 可減碼\n   每約 3~4 個月一次的鎖利提醒，\n   可減碼了結一趟、勿加碼。\n\n● ≤42分：續抱\n   風險可控，可繼續長抱。\n\n【設計理念】\n6669 為長期強勢股，平時長抱；\n加入『高檔回落停利分』後，真正從\n過熱高檔反轉時分數會被推過門檻，\n確保『該賣時一定收到通知』。\n\n【獲利最大化執行 (重要)】\n回測鐵律：全部出清越勤、總獲利越差。\n● 每次訊號全出清：+479%\n● 分批減碼、保留永久核心：約 +771%\n● 完全長抱(不理訊號)：+1063%\n→ 最佳做法：收到『波段了結』時，\n   只減碼交易部位(1/3~1/2)、保留核心，\n   既能定期鎖利受通知、又逼近長抱獲利。\n   僅在『破線(l618)』時才全數退出。\n\n(以上為 2019~2026 全期回測最佳化結果)`;
+                      : stockSymbol === '2301'
+                      ? `【2301 賣出評分 — 11 項等權，每項 9.09 分】\n\n族群權重：\n● 震盪超買 54.5%（6 項）：RSI21／RSI14／RSI9／RSI5 高檔、K9／K5 高檔\n● 均線正乖離 18.2%（2 項）：MA60／MA120 正乖離\n● 相對位置 18.2%（2 項）：布林20 高檔、箱型高位\n● 自低點反彈 9.1%（1 項）：自 60 日低點反彈\n\n【賣出規則】\n賣分 ≥ 80 → 全部清空，不分批、無停損。\n\n【重要：賣分的作用不是「預測未來會跌」】\n這 11 項在 2301 上的前瞻邊際是負的（訓練 −0.12／測試 −2.38pp）——\n意思是 2301 超買之後往往還會漲（它是動能股）。\n但實際交易結果完全相反：+7.3pp 超額。\n\n用頻率對等檢定拆解（真買訊 + 隨機持有天數 vs 真買訊 + 真賣訊）：\n● 隨機出場：CAGR 23.62%、勝率 62%\n● 真實賣訊：CAGR 32.4%、勝率 90%\n→ 出場時機貢獻 +8.80pp（p = 0.0000）\n\n原因：賣分的價值在於「相對進場價鎖利」，它很可靠地出現在\n相對進場的高點。用前瞻報酬去挑賣出因素在 2301 上是錯的標準。\n\n【為什麼用 1402 的清單而非 2301 自己篩的】\n2301 自身篩選只有 2 項通過兩期同向（布林10 高檔 +0.89/+0.70pp、\nMA5 正乖離），前瞻邊際雖為正，但實際交易只有 +0.6pp 超額。\n1402 清單前瞻邊際為負卻有 +7.3pp 超額 —— 因此採用 1402 清單。\n這也讓「因素選擇」這個維度成為樣本外（用另一檔股票的資料挑的），\n證據等級高於用 2301 自己的資料挑因素。\n\n【為什麼是等權】\n對 4130 組賣方權重做系統性搜尋，訓練期共識權重\n（RSI21-63／K5-21／RSI9-11／K9-5）在測試期排名 5/4130（有效），\n但放進實際回測只有 CAGR 18.6%，等權清單是 34.6%。\n前瞻邊際與交易報酬衡量的不是同一件事，交易報酬才是目標。\n\n【賣門檻 80 的選擇】\n頻率-效益曲線（固定買門檻，掃賣門檻）：\n賣 62 → 6.1 次/年、每輪 +2.33%\n賣 71 → 4.1 次/年、每輪 +6.17%\n賣 74 → 3.6 次/年、每輪 +6.26%\n賣 80 → 2.3 次/年、每輪 +9.21%　← 搭配階梯加碼時最佳\n賣 83 → 1.9 次/年、每輪 +12.51%\n在目標持倉制下，賣 80 的組合有最佳的\n「每輪報酬 × 輪數 × 資金效率」平衡。\n\n【驗證】\n● 賣 4.5 次/年、每輪 +11.96%、勝率 92%\n● 隨機化 600 次 p = 0.0000\n● 兩期都正（前半 +5.45%、後半 +13.13%）\n● 鄰域 36 組每輪最低 +9.47%（賣 77~83 都穩定）\n\n【誠實限制】\n只有 50 輪樣本。排除近期多頭（2015~2022）後每輪降到 +6.51%。\n最長一輪抱了 253 個交易日（約 12 個月）。僅適用 2301。`
+                      : `【6669 賣出評分 V25 — 單一因素】\n\n評分 = 季線乖離階梯（權重 100%）\n乖離 = (收盤價 − MA60) / MA60 × 100%\n\n● 乖離 > 40% → 100 分　★ 減碼 1/2\n● 乖離 > 30% →  80 分　★ 減碼 1/3\n● 乖離 > 22% →  56 分　　預警\n● 乖離 > 15% →  32 分\n● 乖離 > 10% →  16 分\n● 乖離 ≤ 10% →   0 分\n\n【核心設計：分級減碼，不清倉】\n保留核心部位長抱，只在過熱時分批獲利入袋。\n同一波只觸發一次減碼，須待乖離跌回 18% 以下\n才重新啟用（避免在同一段高檔重複賣出）。\n\n【實測品質（2019-07 ~ 2026-08）】\n乖離>30%（主訊號，1.0 次/年）\n● 減碼後 40 日平均 −2.80%（基準 +7.89%）→ 邊際 +8.05pp\n● 價格位階 79.2（賣在周邊區間的高 79%）\n● 7 次減碼平均帳面獲利 +82%\n\n乖離>40%（極端，0.3 次/年）\n● 減碼後 20 日 −9.13%、40 日 −11.72%\n● 20 日內下跌機率 100%，價格位階 91.3\n\n乖離>22%（預警，2.6 次/年）\n● 減碼後 40 日 −0.16%，位階 72.4\n● 弱於 30% 那一級，因此只做提示不執行\n\n【已移除的成分與原因】\n● FIBO 壓力（原 35 分）：訓練 −0.92／測試 +8.06 反向。\n  且 7 年內觸及 1.272 僅 1 次、1.618 為 0 次，\n  實際上只透過「跌破 l618」給分 —— 那是停損不是獲利了結。\n● 高檔回落（原 30 分）：訓練 −2.42／測試 +0.60，無效。\n● MACD（+0.50／−2.20）、DMI（−16.24／−1.92）、\n  布林（−0.92／+2.81）、斜率：皆無或反向。\n\n【已移除破線強制停損】\n原規則：跌破 Fibo 0.618 → 強制清倉。\n實測跌破後 20 日平均 +6.45%（邊際 +3.26pp、t=4.07、\n兩期一致）—— 那是買點而非賣點。\n回測中此規則把全期報酬由 +835% 壓到 +115%，\n並使最大回檔由 −50% 惡化到 −68%。\n\n【減碼的取捨（端到端回測，每次買固定股數）】\n● 只買不賣：總回收倍數 3.55，最大回檔 −39%\n● 乖離>30% 減 1/3：倍數 2.20，回檔 −33%，取回現金 > 總投入\n● 減 1/2：倍數 1.90　● 多級減碼：倍數 1.63\n→ 減碼買的是「回檔縮小 + 獲利入袋」，代價是總報酬倍數。\n   建議只用單一級（>30% 減 1/3），不要多級。\n\n【誠實限制】\n減碼樣本僅 7 次。僅適用 6669。`;
                     showInfo(e, 'sell', '賣出評分模型', infoText);
                   }}
                 >
                   <Info size={14}/>
                 </button>
               </div>
+              {is2301 ? (
+                /* 2301：11 項等權，族群拆解 + 因素明細 */
+                <div className="space-y-2.5">
+                  {analysis?.twoSignal?.sellFams.map(F => (
+                    <div key={F.fam}>
+                      {renderScoreBar(`${F.fam} (${F.weight.toFixed(1)}%・${F.n}項)`, F.score, F.weight, 'bg-rose-500')}
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between px-2 py-1 rounded text-[11px] sm:text-xs font-mono border border-rose-500/30 bg-rose-500/10">
+                    <span className="text-rose-300 font-bold">清空門檻</span>
+                    <span className="text-neutral-300">
+                      賣分 {analysis?.twoSignal?.sellScore.toFixed(1)} / 80
+                      {analysis?.twoSignal?.isSellToday
+                        ? <span className="text-rose-400 font-bold ml-2">★ 已觸發</span>
+                        : <span className="text-neutral-500 ml-2">還差 {analysis?.twoSignal?.gapToSell.toFixed(1)} 分</span>}
+                    </span>
+                  </div>
+                  <div className="pt-1.5 border-t border-white/5 space-y-0.5 text-[10px] sm:text-[11px] font-mono max-h-64 overflow-y-auto">
+                    {analysis?.twoSignal?.sellFactors.map(f => (
+                      <div key={f.key} className={`flex items-center justify-between px-2 py-0.5 rounded ${
+                        f.score >= 70 ? 'bg-rose-500/20 text-rose-300 font-bold'
+                        : f.score > 0 ? 'bg-rose-500/5 text-neutral-300' : 'text-neutral-600'}`}>
+                        <span className="truncate" title={f.rule}>{f.key}</span>
+                        <span className="shrink-0 ml-2">
+                          {f.score.toFixed(0)}<span className="text-neutral-600">/100</span>
+                          <span className="ml-1.5 text-neutral-500">＋{f.contrib.toFixed(2)}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-neutral-500 pt-1.5 border-t border-white/5 leading-relaxed">
+                    賣分的作用是「相對進場價鎖利」，不是預測未來下跌 ——
+                    這 11 項的前瞻邊際為負（−0.12／−2.38pp），但頻率對等檢定顯示
+                    出場時機貢獻 +8.80pp（p=0.0000，隨機出場勝率僅 62%，真實賣訊 90%）。
+                    達門檻一次全部清空、不分批、無停損。
+                  </div>
+                </div>
+              ) : is6669 ? (
+                /* 6669 V25：單一因素 = 季線乖離階梯 */
+                <div className="space-y-2.5">
+                  {renderScoreBar('季線乖離 (100%)', analysis?.sell.total || 0, 100, 'bg-rose-500')}
+                  <div className="space-y-1 text-[10px] sm:text-[11px] font-mono">
+                    {[
+                      { lb: '乖離 > 40%', sc: 100, act: '← 減碼 1/2' },
+                      { lb: '乖離 > 30%', sc: 80, act: '← 減碼 1/3' },
+                      { lb: '乖離 > 22%', sc: 56, act: '← 預警' },
+                      { lb: '乖離 > 15%', sc: 32, act: '' },
+                      { lb: '乖離 > 10%', sc: 16, act: '' },
+                      { lb: '乖離 ≤ 10%', sc: 0, act: '' }
+                    ].map(t => {
+                      const active = (analysis?.sell.total ?? -1) === t.sc;
+                      return (
+                        <div key={t.lb} className={`flex justify-between px-2 py-0.5 rounded ${
+                          active ? 'bg-rose-500/20 text-rose-300 font-bold' : 'text-neutral-500'}`}>
+                          <span>{t.lb}<span className="text-neutral-600">{t.act ? '　' + t.act : ''}</span></span>
+                          <span>{t.sc} 分</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="text-[10px] text-neutral-500 pt-1.5 border-t border-white/5 leading-relaxed">
+                    已移除 FIBO 壓力／斜率／MACD／DMI／布林／高檔回落，並移除破線強制停損。
+                    分級減碼、不清倉（核心長抱）。
+                  </div>
+                </div>
+              ) : (
               <div className="space-y-3">
                 {renderScoreBar(
-                  `FIBO 壓力 (${analysis?.fiboMaxScore || 35}%)`, 
-                  analysis?.scores.fibo.sell || 0, 
-                  analysis?.fiboMaxScore || 35, 
+                  `FIBO 壓力 (${analysis?.fiboMaxScore || 35}%)`,
+                  analysis?.scores.fibo.sell || 0,
+                  analysis?.fiboMaxScore || 35,
+                  'bg-rose-500'
+                )}
+                {renderScoreBar('歷史噴發 (不列入評分)', analysis?.scores.slope.sell || 0, 0, 'bg-rose-500')}
+                {renderScoreBar(
+                  `趨勢乖離 (${(analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5)}%)`,
+                  (analysis?.scores.ma.sell + analysis?.scores.macd.sell || 0),
+                  ((analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5)),
                   'bg-rose-500'
                 )}
                 {renderScoreBar(
-                  is3231 ? '歷史噴發 (不列入評分)' : '歷史噴發 (20%)', 
-                  analysis?.scores.slope.sell || 0, 
-                  is3231 ? 0 : 20, 
+                  `震盪過熱 (${(analysis?.rsiMaxScore || 25) + (analysis?.kdMaxScore || 25)}%)`,
+                  analysis?.scores.osc.sell || 0,
+                  (analysis?.rsiMaxScore || 25) + (analysis?.kdMaxScore || 25),
                   'bg-rose-500'
                 )}
                 {renderScoreBar(
-                  is3231 
-                    ? `趨勢乖離 (${(analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5)}%)` 
-                    : `趨勢乖離 (${(analysis?.maMaxScore || 7) + (analysis?.macdMaxScore || 7) + 6}%)`, 
-                  is3231
-                    ? (analysis?.scores.ma.sell + analysis?.scores.macd.sell || 0)
-                    : (analysis?.scores.ma.sell + analysis?.scores.macd.sell + analysis?.scores.dmi.sell || 0), 
-                  is3231
-                    ? ((analysis?.maMaxScore || 10) + (analysis?.macdMaxScore || 5))
-                    : ((analysis?.maMaxScore || 7) + (analysis?.macdMaxScore || 7) + 6), 
-                  'bg-rose-500'
-                )}
-                {renderScoreBar(
-                  `震盪過熱 (${(analysis?.rsiMaxScore || (is3231 ? 25 : 10)) + (analysis?.kdMaxScore || (is3231 ? 25 : 10))}%)`, 
-                  analysis?.scores.osc.sell || 0, 
-                  (analysis?.rsiMaxScore || (is3231 ? 25 : 10)) + (analysis?.kdMaxScore || (is3231 ? 25 : 10)), 
-                  'bg-rose-500'
-                )}
-                {renderScoreBar(
-                  `波動極端 (${analysis?.bbMaxScore || (is3231 ? 30 : 5)}%)`, 
-                  analysis?.scores.bb.sell || 0, 
-                  analysis?.bbMaxScore || (is3231 ? 30 : 5), 
+                  `波動極端 (${analysis?.bbMaxScore || 30}%)`,
+                  analysis?.scores.bb.sell || 0,
+                  analysis?.bbMaxScore || 30,
                   'bg-rose-500'
                 )}
               </div>
+              )}
             </div>
           </div>
         </div>
