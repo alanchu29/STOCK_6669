@@ -255,22 +255,25 @@ const App = () => {
       const retN = (n) => i >= n ? (closes[i] / closes[i - n] - 1) * 100 : null;
 
       // ── 2301 專用：自 N 日高點回落 / 自 60 日低點反彈（%）──
-      const pullback = (w) => {
-        const lo_ = Math.max(0, i - w + 1);
-        const pk = Math.max(...closes.slice(lo_, i + 1));
-        return pk > 0 ? (pk - closes[i]) / pk * 100 : 0;
+      // 用迴圈而非 Math.max(...slice)：2301 有 6,600+ 筆，展開運算子會產生
+      // 上萬次「切陣列 + 展開成參數」，改成單迴圈掃描省下大量暫時物件。
+      const winMax = (w) => {
+        let m = -Infinity;
+        for (let j = Math.max(0, i - w + 1); j <= i; j++) if (closes[j] > m) m = closes[j];
+        return m;
       };
-      const rebound = (w) => {
-        const lo_ = Math.max(0, i - w + 1);
-        const tg = Math.min(...closes.slice(lo_, i + 1));
-        return tg > 0 ? (closes[i] - tg) / tg * 100 : 0;
+      const winMin = (w) => {
+        let m = Infinity;
+        for (let j = Math.max(0, i - w + 1); j <= i; j++) if (closes[j] < m) m = closes[j];
+        return m;
       };
+      const pullback = (w) => { const pk = winMax(w); return pk > 0 ? (pk - closes[i]) / pk * 100 : 0; };
+      const rebound = (w) => { const tg = winMin(w); return tg > 0 ? (closes[i] - tg) / tg * 100 : 0; };
 
       // ── 2301 專用：20 日箱型位置（0~1）──
       let box20 = null;
       if (i >= 19) {
-        const w = closes.slice(i - 19, i + 1);
-        const mx = Math.max(...w), mn = Math.min(...w);
+        const mx = winMax(20), mn = winMin(20);
         box20 = mx > mn ? (closes[i] - mn) / (mx - mn) : 0.5;
       }
 
@@ -610,10 +613,14 @@ const App = () => {
     }
 
     // 只使用有效的斜率值（排除前60個點的0值）來計算百分位
-    const validSlopes = data.filter((d, i) => i >= 60).map(d => d.slopeVal);
-    const sPerc = validSlopes.length > 0 
-      ? (validSlopes.sort((a, b) => a - b).filter(s => s < last.slopeVal).length / validSlopes.length) * 100
-      : 50; // 如果沒有有效斜率，預設為50%
+    // 斜率百分位：只需要「有幾個比今天小」，排序是多餘的（O(n log n) → O(n)）。
+    // 2301 有 6,600+ 筆資料，原本每次 useMemo 都在排一個 6,500 元素的陣列。
+    let slopeLower = 0, slopeCount = 0;
+    for (let i = 60; i < data.length; i++) {
+      slopeCount++;
+      if (data[i].slopeVal < last.slopeVal) slopeLower++;
+    }
+    const sPerc = slopeCount > 0 ? (slopeLower / slopeCount) * 100 : 50;
 
     // === FIBO 評分 ===
     let b_Fibo = 0;
@@ -1564,8 +1571,21 @@ const App = () => {
       totalBuyScore = Math.round(bArr[data.length - 1] * 10) / 10;
       totalSellScore = Math.round(sArr[data.length - 1] * 10) / 10;
 
-      // ── 參考持倉推演（假設完全依訊號執行；訊號用前一日、成交用當日開盤）──
-      const START = Math.min(130, Math.max(0, data.length - 1));
+      /* ── 統計推演（假設完全依訊號執行；訊號用前一日、成交用當日開盤）──
+         起點固定在 2015-07-01 之後的第一筆，與因素篩選／驗證窗口一致。
+         Yahoo 對 2301 提供 2000 年起的資料，但這 25 項因素是用 2015 年之後
+         的資料篩出來的 —— 若把 2000~2014 混進統計，顯示的「勝率 83%、每輪
+         +7.50%」會被誤讀為驗證過的績效，實際上那段是樣本外且表現差很多：
+           2000~2009  41 輪  每輪 +1.50%  勝率 80%  最差單輪 −54.22%
+           2010~2014  13 輪  每輪 +0.83%  勝率 85%  最差單輪 −13.25%
+           2015~2020  17 輪  每輪 +2.78%  勝率 82%  最差單輪 −12.07%
+           2021~2026  28 輪  每輪 +13.75% 勝率 93%  最差單輪  −8.54%
+         分期表現仍完整揭露在 ⓘ 彈窗中，此處只是讓主要統計與驗證窗口對齊。
+         注意：今日買賣分與應持有張數不受此起點影響（只看當日指標）。      */
+      const VALID_FROM = '2015-07-01';
+      let START = data.findIndex(d => d.fullDate >= VALID_FROM);
+      if (START < 0) START = Math.min(130, Math.max(0, data.length - 1));
+      START = Math.max(START, Math.min(130, data.length - 1)); // 至少讓 MA120 有值
       let lots = 0, costSum = 0, entryIdx = null;
       let nBuyAct = 0, nSellAct = 0;
       const rounds = [];
@@ -1771,12 +1791,27 @@ const App = () => {
         }
       }
       if (histIndex === -1 || histIndex < 60) continue; // 確保有足夠的歷史數據
-      
+
       const histLast = data[histIndex];
       const histPrev = data[histIndex - 1];
-      
+
       if (!histLast || !histPrev) continue;
-      
+
+      /* 2301 的歷史徽章直接讀 twoSignal 已算好的分數陣列，
+         不需要重跑下面整套 FIBO／斜率／MA／MACD／DMI／RSI／KD／布林
+         （原本每個歷史日都重算一次，共浪費 5 次完整評分管線）。 */
+      if (is2301) {
+        const hb = twoSignal._bArr[histIndex];
+        const hs = twoSignal._sArr[histIndex];
+        historicalScores.push({
+          buy: Math.round(hb),
+          sell: Math.round(hs),
+          lots: hb < TWO_BUY_LV ? 0 : Math.floor((hb - TWO_BUY_LV) / TWO_STEP) + 1,
+          date: histLast.fullDate || histLast.date
+        });
+        continue;
+      }
+
       // 計算歷史當天的實際分數（使用歷史當天的實際數據）
       const histP = histLast.price;
       
@@ -2167,17 +2202,11 @@ const App = () => {
       const histTotalBuyScore = Math.round(histB_Fibo + histB_Hist + histB_Trend + histB_Osc + histB_Vol);
       const histTotalSellScore = Math.min(100, Math.round(histS_Fibo + histS_Hist + histS_Trend + histS_Osc + histS_Vol + histS_PeakExit));
       
-      // 歷史徽章：各分頁都改用與當日一致的評分方式
-      // 6669 → 單一因素階梯；2301 → 25 項階梯（改顯示「應持有張數」對應的買分）
+      // 歷史徽章：與當日評分方式一致（2301 已於迴圈開頭提前處理）
+      // 6669 → 單一因素階梯（RSI / 季線乖離）；3231 → 加權總分
       historicalScores.push({
-        buy: is3231 ? histTotalBuyScore
-           : is2301 ? Math.round(twoSignal._bArr[histIndex])
-           : rsiLadder(histLast.rsiVal),
-        sell: is3231 ? histTotalSellScore
-            : is2301 ? Math.round(twoSignal._sArr[histIndex])
-            : biasLadder(biasAtIdx(histIndex)),
-        lots: is2301 ? (twoSignal._bArr[histIndex] < TWO_BUY_LV ? 0
-              : Math.floor((twoSignal._bArr[histIndex] - TWO_BUY_LV) / TWO_STEP) + 1) : undefined,
+        buy: is3231 ? histTotalBuyScore : rsiLadder(histLast.rsiVal),
+        sell: is3231 ? histTotalSellScore : biasLadder(biasAtIdx(histIndex)),
         date: histLast.fullDate || histLast.date
       });
     }
@@ -2381,22 +2410,46 @@ const App = () => {
       visibleLayers: { ...visibleLayers, [key]: !visibleLayers[key] }
     });
   };
-  const monthlyTicks = useMemo(() => data.filter(d => d.isNewMonth).map(d => d.fullDate), [data]);
-  const chartWidth = useMemo(() => `${(data.length / (isChartExpanded ? 150 : 350)) * 100}%`, [data, isChartExpanded]);
-  
+  /* ── 圖表顯示視窗 ──────────────────────────────────────────────────────
+     Yahoo 回傳全部歷史（6669 2,125 筆、3231 5,671 筆、2301 6,616 筆），
+     若把全部丟給 Recharts 會產生數千個 SVG 節點加上多條疊圖 → 明顯卡頓。
+     評分一律用完整資料（analysis 吃的是 data），這裡只截斷「顯示」。   */
+  const CHART_RANGES = [
+    { key: 250, label: '1年' }, { key: 500, label: '2年' },
+    { key: 1250, label: '5年' }, { key: 0, label: '全部' }
+  ];
+  const [chartRange, setChartRange] = useState(500);
+  const chartData = useMemo(
+    () => (chartRange > 0 && data.length > chartRange) ? data.slice(-chartRange) : data,
+    [data, chartRange]
+  );
+  const monthlyTicks = useMemo(() => {
+    const t = chartData.filter(d => d.isNewMonth).map(d => d.fullDate);
+    // 資料長時每月一格會過密，依長度稀釋（1年→每月、2年→每季、5年+→每半年）
+    const step = chartData.length > 1000 ? 6 : chartData.length > 400 ? 3 : 1;
+    return step === 1 ? t : t.filter((_, i) => i % step === 0);
+  }, [chartData]);
+  const chartWidth = useMemo(
+    () => `${(chartData.length / (isChartExpanded ? 150 : 350)) * 100}%`,
+    [chartData, isChartExpanded]
+  );
+
   // Y Axis ticks 500
   const yTicks = useMemo(() => {
-    if (!data.length) return [];
-    const min = Math.min(...data.map(d => d.price));
-    const max = Math.max(...data.map(d => d.price));
-    const start = Math.floor(min / 500) * 500;
-    const end = Math.ceil(max / 500) * 500;
+    if (!chartData.length) return [];
+    let min = Infinity, max = -Infinity;
+    for (const d of chartData) { if (d.price < min) min = d.price; if (d.price > max) max = d.price; }
+    // 依價格區間自動選格距（原本固定 500 對 2301 這種百元股只會有 1~2 格）
+    const span = Math.max(max - min, 1);
+    const raw = span / 5;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || mag * 10;
     const ticks = [];
-    for (let i = start; i <= end; i += 500) {
-      ticks.push(i);
+    for (let i = Math.floor(min / step) * step; i <= Math.ceil(max / step) * step; i += step) {
+      ticks.push(Math.round(i * 100) / 100);
     }
     return ticks;
-  }, [data]);
+  }, [chartData]);
 
   const showInfo = (e, type, title, content) => {
     e.stopPropagation();
@@ -3364,6 +3417,22 @@ ${roundRows}
                 <button onClick={() => navScroll('left')} className="p-1 sm:p-1.5 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-neutral-400 transition-colors"><ChevronLeft size={14} className="sm:w-4 sm:h-4"/></button>
                 <button onClick={() => navScroll('right')} className="p-1 sm:p-1.5 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-neutral-400 transition-colors"><ChevronRight size={14} className="sm:w-4 sm:h-4"/></button>
               </div>
+              {/* 顯示區間（只影響圖表，評分一律用完整歷史） */}
+              <div className="flex gap-0.5 ml-1">
+                {CHART_RANGES.map(r => (
+                  <button key={r.key} onClick={() => setChartRange(r.key)}
+                    title={r.key === 0 ? `全部 ${data.length} 筆（資料量大時會變慢）` : `最近 ${r.key} 個交易日`}
+                    className={`px-1.5 sm:px-2 py-1 rounded-lg text-[10px] sm:text-xs font-bold transition-colors ${
+                      chartRange === r.key
+                        ? 'bg-indigo-500/30 text-indigo-300 border border-indigo-500/50'
+                        : 'bg-neutral-800 text-neutral-500 border border-transparent hover:bg-neutral-700'}`}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+              <span className="text-[10px] text-neutral-600 font-mono hidden sm:inline">
+                {chartData.length}/{data.length} 筆
+              </span>
             </div>
             <button onClick={() => setIsChartExpanded(!isChartExpanded)} className="p-1.5 sm:p-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-neutral-400 transition-colors">
               {isChartExpanded ? <Minimize2 size={16} className="sm:w-[18px] sm:h-[18px]"/> : <Maximize2 size={16} className="sm:w-[18px] sm:h-[18px]"/>}
@@ -3385,7 +3454,7 @@ ${roundRows}
             >
               <div style={{ width: chartWidth, minWidth: '100%' }} className="h-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={data} margin={{ top: 10 }}>
+                  <ComposedChart data={chartData} margin={{ top: 10 }}>
                     <defs>
                       <linearGradient id="pGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={themeColors.price} stopOpacity={0.2}/><stop offset="95%" stopColor={themeColors.price} stopOpacity={0}/></linearGradient>
                     </defs>
@@ -3467,7 +3536,7 @@ ${roundRows}
             {/* Sticky Y-Axis Overlay: 純色背景(#171717)，無邊框，且加入 stroke="rgba(0,0,0,0)" 修復白線 */}
             <div className="sticky-y-overlay">
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={data} margin={{ top: 10, right: 15 }}>
+                <ComposedChart data={chartData} margin={{ top: 10, right: 15 }}>
                    <XAxis dataKey="fullDate" hide />
                    {/* 關鍵修復：強制軸線描邊為透明 */}
                    <YAxis 
