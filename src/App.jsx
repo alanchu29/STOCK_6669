@@ -300,7 +300,9 @@ const App = () => {
     const targetTabId = tabId || activeTabId;
     updateTab(targetTabId, { loading: true, fetchError: null });
     
-    const maxRetries = 3;
+    // 2 輪（原為 3）。5 個代理 × 9 秒逾時，全滅時最久約 60 秒即回報錯誤，
+    // 而不是像原本要等 2 分 13 秒。
+    const maxRetries = 2;
     // 處理股票代號：如果沒有包含點號，則加上 .TW 後綴（台灣股票）
     const ticker = symbol.toUpperCase().includes('.') ? symbol.toUpperCase() : `${symbol.toUpperCase()}.TW`;
     const endTime = Math.floor(Date.now() / 1000);
@@ -308,17 +310,34 @@ const App = () => {
     
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${startTime}&period2=${endTime}&interval=1d`;
     
-    // 多個備用代理服務，提高穩定性
+    // ══════════════════════════════════════════════════════════════════════
+    // CORS 代理清單（2026-09-07 逐一實測後重整）
+    // ──────────────────────────────────────────────────────────────────────
+    // Yahoo 的 chart API 不回 access-control-allow-origin，瀏覽器無法直連，
+    // 所以一定要經過會補上 CORS 標頭的代理。
+    //
+    // 舊清單「五個全滅」，這就是使用者完全抓不到資料的原因（實測結果）：
+    //   api.allorigins.win/get   HTTP 522 Cloudflare 連不到源站，且每次耗掉 20s
+    //   corsproxy.io/?<url>      HTTP 403 keyless_legacy_url（已改制需 API key）
+    //   api.allorigins.win/raw   HTTP 522 / 520
+    //   cors.sh/<url>            HTTP 404「CORS proxy temporarily paused」
+    //   Yahoo 直連                HTTP 200 有資料，但無 CORS 標頭 → 瀏覽器擋掉
+    //
+    // ⚠ 免費公共代理本質上不可靠（隨時改制、限流、停用），這次故障必然再發生。
+    //   長期解是自建 Cloudflare Worker 代理，做法見 README「資料來源與 CORS」。
+    // ══════════════════════════════════════════════════════════════════════
     const proxyServices = [
-      // 主要代理：allorigins.win
-      { name: 'AllOrigins (主要)', func: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` },
-      // 備用代理 1：corsproxy.io
-      { name: 'CorsProxy', func: (url) => `https://corsproxy.io/?${encodeURIComponent(url)}` },
-      // 備用代理 2：allorigins raw
+      // r.jina.ai：2026-09-07 實測唯一可用（HTTP 200、ACAO 正確回應、2,144 筆）。
+      // 預設會加上 "Title:/URL Source:/Markdown Content:" 前綴，下方 parse 會自動剝除。
+      // 刻意不帶 x-return-format 自訂標頭 —— 雖然實測 preflight 有通過
+      // （allow-headers 有列 x-return-format），但單純 GET 屬 simple request，
+      // 不觸發 preflight，少一個失敗環節。
+      { name: 'Jina Reader', func: (url) => `https://r.jina.ai/${url}` },
+      // 以下為備援。實測當下皆為 5xx，但這類服務會間歇性復活，保留輪替價值。
       { name: 'AllOrigins (Raw)', func: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
-      // 備用代理 3：cors.sh
-      { name: 'CORS.sh', func: (url) => `https://cors.sh/${url}` },
-      // 備用代理 4：直接嘗試 Yahoo Finance (可能因 CORS 失敗，但某些環境可用)
+      { name: 'CodeTabs', func: (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` },
+      { name: 'AllOrigins (Get)', func: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` },
+      // 最後嘗試直連：一般瀏覽器會因 CORS 失敗，但某些環境（如停用 CORS 的擴充套件）可用
       { name: 'Yahoo Finance (直接)', func: (url) => url }
     ];
     
@@ -348,12 +367,15 @@ const App = () => {
       const controller = new AbortController();
       abortControllersRef.current[targetTabId] = controller;
       
-      // 增加超時時間到 20 秒，給代理服務更多時間
+      // 每個代理 9 秒逾時。
+      // 原本設 20 秒，配合 5 個代理 × 3 輪重試，全滅時要等 2 分 13 秒才跳錯誤視窗
+      //（AllOrigins 的 522 就是硬撐滿 20 秒才回），使用者只會看到畫面一直轉。
+      // 可用的代理實測 1.6 秒回應，9 秒對正常情況綽綽有餘。
       const timeoutId = setTimeout(() => {
         if (!controller.signal.aborted) {
           controller.abort();
         }
-      }, 20000); // 20秒超時
+      }, 9000);
       
       const response = await fetch(proxyUrl, {
         method: 'GET',
@@ -369,20 +391,37 @@ const App = () => {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       
-      let json;
-      // 處理不同的代理響應格式
-      if (currentProxyIndex === 0 || currentProxyIndex === 2) {
-        // allorigins.win 格式：{ contents: "..." }
-        json = await response.json();
-        if (json.contents) {
-          json = JSON.parse(json.contents);
+      // ── 容錯解析：逐層剝除包裝，不再依賴代理索引 ──
+      // 原本用 currentProxyIndex 硬編對應格式，換一個代理就得同步改索引，極易出錯。
+      // 改成看內容判斷，四種包裝都能吃（皆為 2026-09-07 實測到的真實格式）：
+      //   1. 直連 / raw 類代理      → 本身就是 Yahoo 的 JSON
+      //   2. allorigins /get       → { contents: "<JSON 字串>" }
+      //   3. r.jina.ai（本程式）    → { code, status, data: { content: "<JSON 字串>", ... } }
+      //      ※ 因為下方 fetch 送了 Accept: application/json，Jina 會回它自己的信封格式；
+      //        若改送 Accept: */* 則會回 markdown 包裝，由第 4 種處理。兩者都支援。
+      //   4. 純文字/markdown 前綴   → "Title: ...\n\nURL Source: ...\n\nMarkdown Content:\n<JSON>"
+      const text = await response.text();
+      const tryParse = (t) => { try { return JSON.parse(t); } catch (e) { return null; } };
+      let json = tryParse(text);
+      if (json && !json.chart) {
+        if (typeof json.contents === 'string') {
+          json = tryParse(json.contents) || json;
+        } else if (json.data && typeof json.data.content === 'string') {
+          json = tryParse(json.data.content) || json;
         }
-      } else if (currentProxyIndex === 1 || currentProxyIndex === 3) {
-        // corsproxy.io 和 cors.sh 直接返回 JSON
-        json = await response.json();
-      } else {
-        // 直接請求 Yahoo Finance (index 4)
-        json = await response.json();
+      }
+      if (!json || !json.chart) {
+        const at = text.indexOf('{"chart"');
+        if (at >= 0) {
+          json = tryParse(text.slice(at)) ||
+                 tryParse(text.slice(at, text.lastIndexOf('}') + 1)) ||
+                 json;
+        }
+      }
+      // 嚴格檢查到 chart 這一層：代理回錯誤頁或限流訊息時直接換下一個代理，
+      // 而不是往下走到「股票代號不存在」那個會誤導人的錯誤訊息。
+      if (!json || !json.chart) {
+        throw new Error(`代理回傳無法解析出 chart 資料（前 120 字：${text.slice(0, 120)}）`);
       }
       
       // 更新進度：成功獲取數據
@@ -404,7 +443,12 @@ const App = () => {
         if (isNewMonth) lastM = d.getMonth();
         return {
           fullDate: d.toLocaleDateString(),
-          displayDate: isNewMonth ? (d.getMonth() === 0 ? `${d.getFullYear()}年` : `${d.getMonth() + 1}月`) : '', 
+          // isoDate：與 fullDate 同一個本地日期，但格式固定為 YYYY-MM-DD。
+          // fullDate 用 toLocaleDateString()，格式隨瀏覽器語系變動
+          //（zh-TW → "2015/7/1"、en-US → "7/1/2015"），拿來做字串日期比較會出錯，
+          // 只能當顯示與同日比對的鍵值。任何「日期門檻」判斷都必須用 isoDate。
+          isoDate: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+          displayDate: isNewMonth ? (d.getMonth() === 0 ? `${d.getFullYear()}年` : `${d.getMonth() + 1}月`) : '',
           isNewMonth,
           price: result.indicators.quote[0].close[i],
           high: result.indicators.quote[0].high[i],
@@ -1583,7 +1627,14 @@ const App = () => {
          分期表現仍完整揭露在 ⓘ 彈窗中，此處只是讓主要統計與驗證窗口對齊。
          注意：今日買賣分與應持有張數不受此起點影響（只看當日指標）。      */
       const VALID_FROM = '2015-07-01';
-      let START = data.findIndex(d => d.fullDate >= VALID_FROM);
+      // ⚠ 必須用 isoDate（固定 YYYY-MM-DD），不能用 fullDate。
+      // fullDate 是 toLocaleDateString()，格式隨語系變動，字串比較會壞：
+      //   zh-TW "2015/7/1" vs "2015-07-01" → 第 5 字 '/'(0x2F) > '-'(0x2D)，
+      //     年份一相等就直接成立，門檻實際退化成 2015-01-01（差半年）
+      //   en-US "7/1/2015" vs "2015-07-01" → 第 1 字 '7' > '2'，幾乎全部成立，
+      //     findIndex 命中極早的一筆，再被下面的 Math.max 夾成 130，
+      //     整個 2015 窗口限定失效，退回 2000 年起算（100 輪、最差 −54.22%）
+      let START = data.findIndex(d => d.isoDate >= VALID_FROM);
       if (START < 0) START = Math.min(130, Math.max(0, data.length - 1));
       START = Math.max(START, Math.min(130, data.length - 1)); // 至少讓 MA120 有值
       let lots = 0, costSum = 0, entryIdx = null;
@@ -1689,7 +1740,7 @@ const App = () => {
           avgLots: rounds.length ? rounds.reduce((a, r) => a + r.lots, 0) / rounds.length : 0,
           avgDays: rounds.length ? rounds.reduce((a, r) => a + r.days, 0) / rounds.length : 0,
           maxLots: rounds.length ? Math.max(...rounds.map(r => r.lots)) : 0,
-          spanFrom: data[START]?.fullDate ?? '--'
+          spanFrom: data[START]?.isoDate ?? '--'
         },
         recent: rounds.slice(-6).reverse(),
         trend: data.slice(-10).map((d, j) => {
@@ -2307,8 +2358,41 @@ const App = () => {
       }
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // 資料完整性守門：偵測「除權／分割回溯調整不同步」造成的價格斷點
+    // ──────────────────────────────────────────────────────────────────────
+    // 台股單日漲跌幅上限 ±10%。最近 10 根 K 線若出現超過 ±11% 的變動，
+    // 幾乎必然是資料源還沒把除權／分割套用到整段歷史（Yahoo 偶發延遲），
+    // 而不是真實行情 —— 此時所有指標會同時被汙染。
+    //
+    // 實測代價（6669 於 2026-09-02 執行 1:2.9828 分割）：
+    //   Yahoo 已同步 → RSI 82.4、買分 0（正確，當日在高點）
+    //   若歷史未同步 → RSI 28.0、買分 80，並在最高點誤發「強力買進」買訊
+    // 這是最糟的失效方向：叫你在頭部進場。3231／2301 幾乎每年 8 月除權，
+    // 每年都會經過一次這個風險窗口，故三檔共用此守門。
+    //
+    // 為何只看最近 10 根：更早的資料可能來自興櫃（無漲跌幅限制，6669
+    // 2018 年有 12 天越限）或 2015 年前 ±7% 制度期，那些越限是正當的。
+    // 誤報驗證：三檔過去 5 年（各 1,250 個交易日逐日模擬）觸發 0 次。
+    // ══════════════════════════════════════════════════════════════════════
+    let dataAlert = null;
+    for (let i = Math.max(1, data.length - 10); i < data.length; i++) {
+      const c0 = data[i - 1].price, c1 = data[i].price;
+      if (!c0 || !c1) continue;
+      const ch = c1 / c0 - 1;
+      if (Math.abs(ch) > 0.11) {
+        dataAlert = {
+          date: data[i].fullDate || data[i].date,
+          from: c0, to: c1, pct: ch * 100,
+          ratio: ch < 0 ? c0 / c1 : c1 / c0
+        };
+        break;
+      }
+    }
+
     return {
       last, prev, fibo, sPerc, maxPrice, minPrice, bias, maSlope, isBroken, fiboValid: fiboValid,
+      dataAlert, // 除權／分割調整不同步的斷點警示（null = 資料連續）
       sixSignal, // 6669 V25 訊號狀態（由資料推算，無需本機記錄）
       twoSignal, // 2301 目標持倉制狀態（由資料推算，無需本機記錄）
       fiboMaxScore: fiboMaxScore, // 傳遞 FIBO 最大分數，用於顯示
@@ -2965,6 +3049,24 @@ ${roundRows}
       </div>
 
       <div className="max-w-7xl mx-auto mb-5 space-y-3">
+        {/* ── 資料完整性警示：除權／分割調整不同步 ── */}
+        {analysis?.dataAlert && (
+          <div className="rounded-2xl border-2 border-amber-500/60 bg-amber-500/10 px-4 py-3 sm:px-5 sm:py-4">
+            <div className="text-sm sm:text-base font-black text-amber-300">
+              ⚠ 資料異常：疑似除權／分割尚未回溯調整
+            </div>
+            <div className="text-[11px] sm:text-xs text-amber-200/80 mt-1.5 font-mono">
+              {analysis.dataAlert.date} 單日 {analysis.dataAlert.pct > 0 ? '+' : ''}{analysis.dataAlert.pct.toFixed(1)}%
+              （{Math.round(analysis.dataAlert.from).toLocaleString()} → {Math.round(analysis.dataAlert.to).toLocaleString()}）
+              <span className="text-amber-200/60"> · 超過台股 ±10% 上限 · 疑似比例 1:{analysis.dataAlert.ratio.toFixed(4)}</span>
+            </div>
+            <div className="text-[11px] sm:text-xs text-amber-200/70 mt-1.5 leading-relaxed">
+              資料源還沒把除權／分割套用到整段歷史，RSI、乖離、KD、布林等指標會同時被汙染，
+              且錯誤方向通常是<strong className="text-amber-200">在高點誤發買進訊號</strong>。
+              <strong className="text-amber-200">今日評分與買賣訊號請勿採用</strong>，通常隔一個交易日就會修正。
+            </div>
+          </div>
+        )}
         {/* ── 三態提示（6669：買進 / 減碼 / 不動） ── */}
         <div className={`rounded-2xl border px-4 py-3 sm:px-5 sm:py-4 ${analysis?.tradeTiming?.bgClass || 'bg-neutral-500/20 border-neutral-500/40'}`}>
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
@@ -3065,6 +3167,22 @@ ${roundRows}
             <div className="text-[10px] text-neutral-500 mt-2.5 leading-relaxed">
               動能指標無固定價位。買進另需距上次買訊滿 21 個交易日（約 1 個月）；
               減碼訊號在同一波只觸發一次，須待乖離跌回 18% 以下才重新啟用。
+            </div>
+            <div className="text-[10px] text-neutral-500 mt-1.5 leading-relaxed border-t border-white/5 pt-1.5">
+              <span className="text-amber-300/70 font-bold">
+                2026-09-02 除權：每股配股票股利 19.828 元（1 股配 1.9828 股，非股票分割）。
+              </span>
+              證交所除權前收盤 7,800 → 參考價 2,615，價格調整因子 2.9828。
+              本頁所有價格（含上方觸發價位與歷史買訊價）都是<strong className="text-neutral-400">除權還原後</strong>的
+              新尺度，與券商對帳單上的舊價格不同 —— 舊價 ÷ 2.9828 即為此處數字。
+              RSI 與乖離是比率，除權不影響評分與訊號。
+              但「1 張」的資金量已變為原本的 1/3（除權前約 780 萬 → 現約 262 萬），
+              加碼與減碼的實際金額請依此重新衡量。
+              <br />
+              <span className="text-amber-300/70">撥券前的資產換算：</span>
+              除權基準日 2026-09-08，新股約需再等 2~3 週才撥券入帳。在那之前券商庫存仍只顯示舊股數，
+              市值會看起來少了約 2/3 —— 那是<strong className="text-neutral-400">尚未入帳的配股，不是虧損</strong>。
+              真實市值 = 券商顯示股數 × 2.9828 × 現價（等於除權前的股數 × 舊價）。
             </div>
           </div>
         )}
